@@ -366,6 +366,7 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL'), 'https://wiki.loxberry.de/'
   <input data-role="none" type="text" name="mqtt_topic" value="<?= pw_e($pw_cfg['mqtt_topic']) ?>" placeholder="pumpe">
   <div class="sm-hilfe"><?= pw_t('MQTT.H_TOPIC') ?></div>
 </div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= pw_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= pw_e(pw_t('ALLG.SPEICHERN')) ?></button>
 </div>
