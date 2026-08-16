@@ -7,6 +7,18 @@ Version 0.9.1 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
 
+## Neu in 0.9.5
+
+**Die Bedienoberflaeche brach auf dem installierten LoxBerry ab.**
+`webfrontend/htmlauth/index.php` suchte `pw_lib.php` ueber
+`dirname(__DIR__) . '/html/…'`. Im entpackten Archiv liegen `html/` und
+`htmlauth/` nebeneinander, installiert in getrennten Baeumen — dort zeigte der
+Pfad ins Leere, und die Seite blieb weiss.
+
+Die Bibliothek wird jetzt ueber eine Kandidatenliste gesucht; findet keiner sie,
+steht auf der Seite, **welche Datei wo erwartet wurde**, statt eines leeren
+Fensters.
+
 ## Wofür
 
 Die Bremse hält die Einspeisung auf dem Wert, der erlaubt ist — null bei

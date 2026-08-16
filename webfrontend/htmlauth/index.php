@@ -15,7 +15,46 @@ if ($pw_lbhome) {
     $pw_sdk = $pw_lbhome . '/libs/phplib/loxberry_system.php';
     if (file_exists($pw_sdk)) { require_once $pw_sdk; require_once $pw_lbhome . '/libs/phplib/loxberry_web.php'; }
 }
-require_once dirname(__DIR__) . '/html/pw_lib.php';
+/* Die Bibliothek ueber eine Kandidatenliste finden - NICHT ueber eine feste
+ * Zahl von ".." nach oben.
+ *
+ * Im entpackten Archiv liegen html/ und htmlauth/ nebeneinander, auf dem
+ * installierten LoxBerry in GETRENNTEN Baeumen:
+ *
+ *     /opt/loxberry/webfrontend/htmlauth/plugins/<ordner>/index.php
+ *     /opt/loxberry/webfrontend/html/plugins/<ordner>/pw_lib.php
+ *
+ * dirname(__DIR__) ergibt dort /opt/loxberry/webfrontend/htmlauth/plugins -
+ * gesucht wurde also .../htmlauth/plugins/html/pw_lib.php. Die gibt es nicht, und
+ * die Oberflaeche endete mit einem fatalen Fehler, also weiss.
+ *
+ * Gefunden am 16.08.2026 mit Werkzeuge/installationslage_pruefen.py.
+ */
+$pw_kandidaten = array();
+if ($pw_lbhome) {
+    $pw_kandidaten[] = $pw_lbhome . '/webfrontend/html/plugins/'
+                     . (getenv('LBPPLUGINDIR') ?: basename(__DIR__)) . '/pw_lib.php';
+}
+$pw_kandidaten[] = dirname(dirname(dirname(__DIR__)))
+                 . '/html/plugins/' . basename(__DIR__) . '/pw_lib.php';
+$pw_kandidaten[] = dirname(__DIR__) . '/html/pw_lib.php';
+
+$pw_lib = '';
+foreach ($pw_kandidaten as $pw_kand) {
+    if (is_file($pw_kand)) { $pw_lib = $pw_kand; break; }
+}
+if ($pw_lib === '') {
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<h2>Pumpenwaechter</h2><p>Die Programmbibliothek <code>pw_lib.php</code> wurde an '
+       . 'keiner der erwarteten Stellen gefunden. Bitte das Plugin neu '
+       . 'installieren.</p><ul>';
+    foreach ($pw_kandidaten as $pw_kand) {
+        echo '<li><code>' . htmlspecialchars($pw_kand, ENT_QUOTES, 'UTF-8') . '</code></li>';
+    }
+    echo '</ul>';
+    exit;
+}
+require_once $pw_lib;
 
 $pw_saved = false; $pw_err = ''; $pw_note = '';
 
