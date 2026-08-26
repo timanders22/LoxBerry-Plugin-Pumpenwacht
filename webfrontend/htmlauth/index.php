@@ -39,6 +39,23 @@ $pw_kandidaten[] = dirname(dirname(dirname(__DIR__)))
                  . '/html/plugins/' . basename(__DIR__) . '/pw_lib.php';
 $pw_kandidaten[] = dirname(__DIR__) . '/html/pw_lib.php';
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 $pw_lib = '';
 foreach ($pw_kandidaten as $pw_kand) {
     if (is_file($pw_kand)) { $pw_lib = $pw_kand; break; }
@@ -198,7 +215,6 @@ $pw_befunde = array(0 => 'BEFUND.OK', 1 => 'BEFUND.SCHALTSPIEL', 2 => 'BEFUND.DA
                     3 => 'BEFUND.TROCKENLAUF', 4 => 'BEFUND.UEBERLAST', 5 => 'BEFUND.STILL');
 
 $pw_frame = class_exists('LBWeb', false);
-if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html'); }
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -246,6 +262,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['pw_zurueck'])) {
         }
     }
 }
+
+
+if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html'); }
 
 ?>
 <style>
