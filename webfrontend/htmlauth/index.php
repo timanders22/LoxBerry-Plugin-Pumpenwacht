@@ -199,6 +199,54 @@ $pw_befunde = array(0 => 'BEFUND.OK', 1 => 'BEFUND.SCHALTSPIEL', 2 => 'BEFUND.DA
 
 $pw_frame = class_exists('LBWeb', false);
 if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html'); }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['pw_sichern'])) {
+    $pw_js = json_encode(pw_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($pw_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="pumpenwacht_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $pw_js;
+        exit;
+    }
+    $pw_err = pw_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['pw_zurueck'])) {
+    if (!isset($_FILES['pw_sicherung']) || !is_array($_FILES['pw_sicherung'])
+        || !isset($_FILES['pw_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['pw_sicherung']['tmp_name'])) {
+        $pw_err = pw_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['pw_sicherung']['size'] > 262144) {
+        $pw_err = pw_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($pw_neu, $pw_mangel, $pw_n) = pw_sicherung_lesen(
+            (string) @file_get_contents($_FILES['pw_sicherung']['tmp_name']));
+        if ($pw_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $pw_err = pw_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $pw_mangel);
+        } elseif (pw_config_speichern($pw_neu)) {
+            $pw_note = sprintf(pw_t('EINST.SICH_UEBERNOMMEN'), $pw_n);
+        } else {
+            $pw_err = pw_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard: eigener Behaelter, kein Schattenwurf, Reiter im Fluss */
@@ -383,8 +431,27 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL'), 'https://wiki.loxberry.de/'
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= pw_e(pw_t('ALLG.SPEICHERN')) ?></button>
 </div>
-<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= pw_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= pw_t('LEGENDE.AKTION') ?></span> <span><i class="sm-punkt sm-b-lesen"></i> <?= pw_t('LEGENDE.LESEN') ?></span></div>
 </form>
+
+<h2><?= pw_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= pw_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= pw_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="pw_sichern" value="1"><?= pw_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="pw_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="pw_zurueck" value="1"><?= pw_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -427,7 +494,7 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL'), 'https://wiki.loxberry.de/'
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S2_TITEL') ?></b><br><br>
-<?= pw_t('LOX.S2_TEXT') ?>
+<?= pw_abo_text() ?>
 <pre class="sm-pre"><?= pw_e($pw_topic) ?>/#</pre>
 </div>
 

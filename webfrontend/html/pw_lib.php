@@ -355,3 +355,105 @@ function pw_t($schluessel)
     list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }
+
+
+/**
+ * Die Fassung des LoxBerry-MQTT-Gateways - 0 heisst "nicht feststellbar".
+ *
+ * Sie steht als Mqtt.Gatewayversion in config/system/general.json (ab Werk
+ * 1) und entscheidet, was der Anwender eintragen muss: unter V1 jedes Thema
+ * von Hand auf der Abo-Seite, ab V2 erscheint die Themengruppe von selbst in
+ * den Subscriptions.
+ *
+ * Die Datei wird hier eigens gelesen, obwohl andere Stellen sie auch lesen.
+ * Das ist Absicht: dieser Baustein passt damit in jedes Plugin, unabhaengig
+ * davon, wie es seinen MQTT-Zustand ermittelt - und er geht nicht kaputt,
+ * wenn jemand jene Funktion umbaut.
+ */
+function pw_gateway_fassung()
+{
+    $home = getenv('LBHOMEDIR');
+    if (!$home && defined('LBHOMEDIR')) {
+        $home = LBHOMEDIR;
+    }
+    if (!$home || !is_dir($home)) {
+        return 0;
+    }
+    $d = @json_decode((string) @file_get_contents(
+        $home . '/config/system/general.json'), true);
+    if (!is_array($d)) {
+        return 0;
+    }
+    foreach (array('Mqtt', 'mqtt') as $ab) {
+        if (!isset($d[$ab]) || !is_array($d[$ab])) {
+            continue;
+        }
+        foreach (array('Gatewayversion', 'gatewayversion') as $sl) {
+            if (isset($d[$ab][$sl]) && (string) $d[$ab][$sl] !== '') {
+                return (int) $d[$ab][$sl];
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * Der Hinweis zum MQTT-Abo - in der Fassung, die zum GATEWAY passt.
+ *
+ * Bis hierher stand an der Ausgabestelle unbedingt "Ohne diesen Eintrag
+ * kommt am Miniserver nichts an". Das gilt fuer Gateway V1; ab V2 schickte
+ * der Satz jeden Anwender zu einem Eingabeplatz, den es nicht mehr gibt.
+ *
+ * Drei Ausgaenge: ist die Fassung nicht feststellbar, werden BEIDE Faelle
+ * genannt statt einer behauptet.
+ */
+function pw_abo_text()
+{
+    $f = pw_gateway_fassung();
+    if ($f <= 0) {
+        return pw_t('LOX.ABO_UNBEKANNT');
+    }
+    $gemessen = ' <span class="sm-mono">'
+              . sprintf(pw_t('LOX.ABO_GEMESSEN'), $f) . '</span>';
+    return pw_t($f >= 2 ? 'LOX.ABO_V2' : 'LOX.S2_TEXT') . $gemessen;
+}
+
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
+ * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
+ * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
+ * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
+ * sieht es ihr nicht an.
+ *
+ * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
+ * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ */
+function pw_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(pw_t('EINST.SICH_KEIN_JSON')), 0);
+    }
+    $neu = pw_vorgaben();
+    $bekannt = array_keys($neu);
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = pw_t('EINST.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
+}
