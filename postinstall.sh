@@ -6,8 +6,13 @@
 # dort kein if($isupgrade). Alles hier muss deshalb mehrfach ausfuehrbar
 # sein, ohne Schaden anzurichten.
 #
-# Dieses Skript laeuft als Benutzer loxberry, NICHT als root. Deshalb steht
-# mosquitto-clients in dpkg/apt und wird nicht hier installiert.
+# Dieses Skript laeuft als Benutzer loxberry, NICHT als root.
+#
+# Bis 0.9.7 stand hier der Text des Einspeisebremse-Plugins: Netzzaehler mit
+# Vorzeichen, Stellglieder mit {W}/{KW}/{PROZENT}, "Regelung einschalten",
+# eine Pruefung auf mosquitto-clients, die dieses Plugin gar nicht benutzt,
+# und ein chown ohne Root-Rechte. Nichts davon hatte mit dem Pumpenwaechter
+# zu tun.
 
 ARGV3=$3
 ARGV5=$5
@@ -33,57 +38,75 @@ chmod 700 "$PCONFIG" 2>/dev/null
 [ -f "$PCONFIG/pumpenwacht.json" ] || echo '{}' > "$PCONFIG/pumpenwacht.json"
 chmod 600 "$PCONFIG/pumpenwacht.json" 2>/dev/null
 
-# Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
+# ---------- Konfiguration aus der Zweitschrift ----------
+# Sie liegt NEBEN dem Ordner, nicht darin: LoxBerry entfernt
+# config/plugins/<ordner>/ bei Deinstallation und Neuinstallation, und eine
+# Sicherung im Ordner staerbe genau in dem Fall mit, fuer den es sie gibt.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/pumpenwacht.json"
 if [ -f "$BK" ]; then
     INHALT=$(cat "$CF" 2>/dev/null)
     if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-        cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+        if cp -p "$BK" "$CF"; then
+            chmod 600 "$CF" 2>/dev/null
+            echo "<OK> Konfiguration aus der Zweitschrift wiederhergestellt."
+        else
+            echo "<FAIL> Die Zweitschrift liess sich nicht zurueckspielen: $BK"
+        fi
     fi
 fi
+# Sie traegt dasselbe Geheimnis wie die Konfiguration - also dieselben Rechte.
+[ -f "$BK" ] && chmod 600 "$BK" 2>/dev/null
 
 # ---------- PHP pruefen ----------
 if ! command -v php >/dev/null 2>&1; then
-    echo "<FAIL> Es wurde kein PHP gefunden. Ohne PHP laeuft weder die Oberflaeche noch der Dienst."
+    echo "<FAIL> Es wurde kein PHP gefunden. Ohne PHP laeuft weder die Oberflaeche noch der Minutentakt."
     exit 1
 fi
 echo "<INFO> PHP: $(php -v 2>/dev/null | head -1)"
 
-# ---------- mosquitto-Werkzeuge pruefen ----------
-# Nicht installieren, nur nachsehen und sagen. Sie stehen in dpkg/apt; wenn
-# sie hier fehlen, ist an der Installation etwas schiefgegangen, und das
-# soll man erfahren, bevor man sich wundert, warum nichts geregelt wird.
-FEHLT=""
-command -v mosquitto_sub >/dev/null 2>&1 || FEHLT="mosquitto_sub"
-command -v mosquitto_pub >/dev/null 2>&1 || FEHLT="$FEHLT mosquitto_pub"
-if [ -n "$FEHLT" ]; then
-    echo "<INFO> Es fehlt:$FEHLT"
-    echo "<INFO> Ohne diese Werkzeuge kann die Bremse keinen MQTT-Zaehler lesen"
-    echo "<INFO> und nichts ueber MQTT stellen. Nachholen mit:"
-    echo "<INFO>   sudo apt install mosquitto-clients"
+# ---------- Der Selbsttest des Rechenkerns ----------
+# Ohne Anlage und ohne Netz: er rechnet die Entscheidungen durch und
+# vergleicht sie mit den hinterlegten Sollwerten. Ein Kern, der hier
+# durchfaellt, wuerde in Loxone falsche Befunde stellen - das soll man
+# erfahren, bevor man die Sperre verdrahtet.
+KERN="$BASE/webfrontend/html/plugins/$PFOLDER/pw_regel.php"
+if [ -f "$KERN" ]; then
+    if AUSGABE=$(php "$KERN" 2>&1); then
+        echo "<OK> $(echo "$AUSGABE" | tail -1)"
+    else
+        echo "<FAIL> Der Selbsttest des Rechenkerns ist fehlgeschlagen:"
+        echo "$AUSGABE" | grep '\[FEHL\]' | head -10
+    fi
 else
-    echo "<OK> mosquitto_sub und mosquitto_pub sind vorhanden."
+    echo "<INFO> Rechenkern nicht gefunden ($KERN) - Selbsttest uebersprungen."
 fi
 
-# ---------- Selbsttest des Regelkerns ----------
-# Ohne Anlage und ohne Netz: rechnet die Entscheidungen durch und
-# vergleicht sie mit den hinterlegten Sollwerten.
-
-chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
-
-# ---------- Dienst starten ----------
-# Der Dienst misst und zeigt an. GESTELLT wird erst, wenn der Mensch die
-# Regelung in der Oberflaeche einschaltet - eine frisch installierte Bremse
-# greift niemals von selbst in eine laufende Anlage ein.
-# Kein Dienst: der Pumpenwaechter rechnet je Anlieferung im Endpunkt.
+# ---------- Der Minutentakt ----------
+# Er laesst sich hier nicht starten (das macht der Cron des Systems), aber es
+# laesst sich SAGEN, ob die Datei angekommen ist - ein Cron, der fehlt, faellt
+# sonst niemandem auf.
+if [ -f "$PBIN/pw_takt.php" ]; then
+    if AUSGABE=$(php "$PBIN/pw_takt.php" --probe 2>&1); then
+        echo "<OK> Der Minutentakt laeuft (einmal von Hand aufgerufen, nichts geschrieben)."
+    else
+        echo "<FAIL> Der Minutentakt bricht ab:"
+        echo "$AUSGABE" | head -5
+    fi
+else
+    echo "<FAIL> bin/pw_takt.php fehlt - ohne ihn merkt niemand, wenn der Zwischenzaehler ausfaellt."
+fi
 
 echo "<OK> Installation abgeschlossen."
 echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche:"
-echo "<INFO>  1. Reiter Einstellungen: Netzzaehler eintragen - Vorzeichen beachten,"
-echo "<INFO>     plus = Bezug, minus = Einspeisung."
-echo "<INFO>  2. Stellglieder eintragen, mit Platzhalter {W}, {KW} oder {PROZENT}."
-echo "<INFO>  3. Reiter Test: 'Messwerte lesen' und 'Trockenlauf' - dort steht,"
-echo "<INFO>     was die Regelung taete und welche Befehle hinausgingen."
-echo "<INFO>  4. Erst wenn das stimmt: Regelung einschalten."
+echo "<INFO>  1. Reiter Einstellungen: Pumpenmodell waehlen - die Schwellen"
+echo "<INFO>     werden dann aus dem Datenblatt vorgeschlagen. Wer misst,"
+echo "<INFO>     traegt seine eigenen Zahlen ein."
+echo "<INFO>  2. Reiter Einbindung in Loxone: die beiden Vorlagen erzeugen und"
+echo "<INFO>     in Loxone Config unter 'Vordefinierte Geraete' einlesen."
+echo "<INFO>  3. Reiter Test: 'Zustand ansehen' und 'Testwert anliefern' -"
+echo "<INFO>     dort steht, welchen Befund das Plugin daraus stellt."
+echo "<INFO>  4. Erst wenn das stimmt: im Reiter Einstellungen 'Sperren"
+echo "<INFO>     einschalten' anhaken. Ab Werk sperrt der Waechter NICHTS -"
+echo "<INFO>     er misst und meldet."
 exit 0
