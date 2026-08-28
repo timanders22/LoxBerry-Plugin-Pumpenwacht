@@ -1,12 +1,67 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
-  <rect width="512" height="512" rx="96" fill="#1565c0"/>
-  <circle cx="256" cy="256" r="150" fill="none" stroke="#ffffff" stroke-width="26"/>
-  <g stroke="#ffffff" stroke-width="26" stroke-linecap="round">
-    <line x1="256" y1="256" x2="256" y2="146"/>
-    <line x1="256" y1="256" x2="351" y2="311"/>
-    <line x1="256" y1="256" x2="161" y2="311"/>
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Main Center Motif: Grundfos-style Water Circulation Pump -->
+    
+    <!-- Horizontal Pipe / Flange Connections -->
+    <rect x="156" y="172" width="200" height="36" rx="6" fill="#ffffff" />
+    <!-- Flange Ends -->
+    <rect x="146" y="158" width="16" height="64" rx="4" fill="#ffffff" />
+    <rect x="350" y="158" width="16" height="64" rx="4" fill="#ffffff" />
+
+    <!-- Pump Volute / Circular Rotor Housing -->
+    <circle cx="256" cy="190" r="62" fill="#ffffff" />
+    <circle cx="256" cy="190" r="48" fill="#6dac20" />
+
+    <!-- Impeller Blades Cutout (Spinning Water Pump Rotor) -->
+    <circle cx="256" cy="190" r="12" fill="#ffffff" />
+    <!-- 4 Curved Impeller Blades -->
+    <path d="M 256 178 C 248 152 264 140 256 138 C 248 140 248 162 256 178 Z" fill="#ffffff" />
+    <path d="M 256 202 C 264 228 248 240 256 242 C 264 240 264 218 256 202 Z" fill="#ffffff" />
+    <path d="M 244 190 C 218 182 206 198 204 190 C 206 182 228 182 244 190 Z" fill="#ffffff" />
+    <path d="M 268 190 C 294 198 306 182 308 190 C 306 198 284 198 268 190 Z" fill="#ffffff" />
+
+    <!-- Top Motor Terminal Control Box (Grundfos Box) -->
+    <rect x="206" y="85" width="100" height="52" rx="10" fill="#ffffff" />
+    <!-- Control Display / Status LEDs Cutout -->
+    <rect x="220" y="97" width="72" height="18" rx="4" fill="#6dac20" />
+    <circle cx="232" cy="106" r="3" fill="#ffffff" />
+    <circle cx="244" cy="106" r="3" fill="#ffffff" />
+    <rect x="260" y="103" width="22" height="6" rx="2" fill="#ffffff" />
+
+    <!-- Flanking Left Symbol: Water Drop -->
+    <g transform="translate(100, 155)">
+      <circle cx="0" cy="0" r="28" fill="#ffffff" />
+      <path d="M 0 -14 C 0 -14 -12 2 -12 10 A 12 12 0 0 0 12 10 C 12 2 0 -14 0 -14 Z" fill="#6dac20" />
+    </g>
+
+    <!-- Flanking Right Symbol: Watchdog Shield with Checkmark -->
+    <g transform="translate(412, 155)">
+      <circle cx="0" cy="0" r="28" fill="#ffffff" />
+      <path d="M 0 -15 L 16 -8 L 16 3 Q 16 15 0 19 Q -16 15 -16 3 L -16 -8 Z" fill="#6dac20" />
+      <path d="M -6 -1 L -1 4 L 6 -5" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
   </g>
-  <circle cx="256" cy="256" r="34" fill="#ffffff"/>
-  <path d="M 396 88 C 396 88 436 138 436 166 A 40 40 0 0 1 356 166 C 356 138 396 88 396 88 Z" fill="#90caf9"/>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Pumpenwächter</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
 </svg>

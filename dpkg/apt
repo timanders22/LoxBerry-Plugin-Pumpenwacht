@@ -1,0 +1,18 @@
+# Diese Pakete installiert LoxBerry mit "apt-get -y install" - und zwar als
+# root, waehrend der Plugin-Installation.
+#
+# WARUM DAS HIER STEHT UND NICHT IN postinstall.sh:
+# postinstall.sh laeuft als Benutzer loxberry. Ein "apt-get install" dort
+# scheitert mangels Rechten - immer, still, und mit einem Hinweistext, den
+# man leicht ueberliest. Diese Liste ist der vorgesehene Weg.
+#
+# mosquitto-clients bringt mosquitto_sub. Es wird NUR gebraucht, wenn die
+# Messwertquelle auf "MQTT" steht - der Weg ueber Loxone kommt ohne aus, und
+# er bleibt die Vorgabe. Fehlt das Werkzeug trotzdem, sagt es der Reiter Test
+# in einer eigenen Zeile, statt dass der Dienst stumm nicht anlaeuft.
+#
+# Bis 0.9.8 hatte dieses Plugin GAR KEIN dpkg/apt - es brauchte auch keines:
+# veroeffentlicht wird ueber den UDP-Eingang des Gateways, und dafuer genuegt
+# stream_socket_client() aus dem PHP-Kern. Das bleibt so; hinzu kommt nur das
+# LESEN vom Broker.
+mosquitto-clients

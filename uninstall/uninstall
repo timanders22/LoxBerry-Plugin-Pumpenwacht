@@ -1,0 +1,54 @@
+#!/bin/bash
+# Pumpenwaechter - Deinstallation
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# WARUM ES DIESE DATEI GIBT
+#
+# LoxBerry entfernt bei der Deinstallation config/plugins/<ordner>/ - aber
+# NICHT die Zweitschrift, die eine Ebene darueber liegt:
+#
+#     config/plugins/<ordner>.backup.json
+#
+# Sie enthaelt das AKTIONSTOKEN. Ohne diese Datei bliebe das Geheimnis nach
+# dem Deinstallieren liegen, und schlimmer: die Selbstheilung in pw_config()
+# holt es bei einer spaeteren "sauberen" Neuinstallation von selbst zurueck.
+# Wer das Plugin entfernt, weil er das Wortzeichen los sein will, haette es
+# danach wieder.
+#
+# REGELN_2: "Sobald ein Plugin irgendein Geheimnis neben dem
+# Konfigurationsordner ablegt", braucht es uninstall/uninstall - ohne Ausnahme.
+
+ARGV3=$3
+ARGV5=$5
+PFOLDER="${ARGV3:-pumpenwacht}"
+BASE="${ARGV5:-$LBHOMEDIR}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    SELF=$(cd "$(dirname "$0")" && pwd)
+    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+fi
+
+# Erst den Zuhoerer anhalten - sonst laeuft ein Prozess weiter, dessen
+# Plugin es nicht mehr gibt, und schreibt in Ordner, die gerade
+# verschwinden.
+DIENST="$BASE/bin/plugins/$PFOLDER/pw_dienst.php"
+if [ -f "$DIENST" ]; then
+    LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" php "$DIENST" stop 2>/dev/null \
+        && echo "<OK> MQTT-Zuhoerer angehalten."
+fi
+
+BK="$BASE/config/plugins/$PFOLDER.backup.json"
+if [ -f "$BK" ]; then
+    rm -f "$BK" && echo "<OK> Zweitschrift der Konfiguration entfernt ($BK)."
+    [ -f "$BK" ] && echo "<FAIL> Die Zweitschrift liess sich nicht entfernen: $BK"
+else
+    echo "<INFO> Keine Zweitschrift vorhanden - nichts zu entfernen."
+fi
+
+# Zustand, Tagesbilanz und Sperrdatei. Sie tragen kein Geheimnis, aber sie
+# gehoeren zu einem Plugin, das es nicht mehr gibt.
+rm -rf "$BASE/data/plugins/$PFOLDER" 2>/dev/null
+
+echo "<INFO> Das Protokoll bleibt stehen: $BASE/log/plugins/$PFOLDER"
+echo "<INFO> In Loxone bleiben die virtuellen Ein- und Ausgaenge stehen -"
+echo "<INFO> sie muessen dort von Hand entfernt werden."
+exit 0

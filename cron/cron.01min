@@ -1,0 +1,36 @@
+#!/bin/sh
+# Pumpenwaechter - Minutentakt und Waechter
+#
+# ZWEI AUFGABEN, und die Reihenfolge ist Absicht:
+#
+# 1. Den MQTT-Zuhoerer nachstarten, falls er stehen sollte. Er laeuft nur,
+#    wenn die Messwertquelle in den Einstellungen auf "MQTT" steht; sonst
+#    beendet er sich sofort und sagt es. Ein Waechter, der schweigend nichts
+#    tut, ist schlimmer als keiner - deshalb geht seine Fehlerausgabe ins
+#    Protokoll und nicht nach /dev/null.
+#
+# 2. Den Zustand fortschreiben und das Lebenszeichen schicken. Das gilt fuer
+#    BEIDE Wege: auch mit laufendem Zuhoerer muss jede Minute etwas
+#    hinausgehen, sonst behaelt ein virtueller Eingang in Loxone seinen
+#    letzten Wert und niemand merkt einen Ausfall.
+#
+# REPLACELBPBINDIR und REPLACELBPLOGDIR werden bei der Installation ersetzt.
+# Eine Rechnung mit ".." waere hier falsch: die Cron-Datei liegt DREI Ebenen
+# unter der Wurzel (<home>/system/cron/cron.01min/<ordner>), nicht zwei.
+#
+# Ausdruecklich ueber php aufgerufen: geht bei einem misslungenen Update das
+# Ausfuehrungsrecht verloren, schluege der unmittelbare Aufruf lautlos fehl.
+LOG="REPLACELBPLOGDIR/pumpenwacht.log"
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+
+# 1. Waechter. "status" gibt 0 zurueck, wenn er laeuft.
+if [ -f "REPLACELBPBINDIR/pw_dienst.php" ]; then
+    if ! php "REPLACELBPBINDIR/pw_dienst.php" status >/dev/null 2>&1; then
+        # nohup und &: der Cron soll nicht auf ihn warten.
+        nohup php "REPLACELBPBINDIR/pw_dienst.php" >/dev/null 2>>"$LOG" &
+    fi
+fi
+
+# 2. Takt.
+[ -f "REPLACELBPBINDIR/pw_takt.php" ] || exit 0
+php "REPLACELBPBINDIR/pw_takt.php" >/dev/null 2>>"$LOG"
