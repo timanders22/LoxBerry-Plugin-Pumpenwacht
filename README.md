@@ -4,7 +4,7 @@
 Leistungsaufnahme.** Loxone liefert die Watt-Zahl des Zwischenzählers an, das
 Plugin stellt daraus einen Befund und meldet ihn zurück.
 
-Version 0.9.10 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.11 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
 
@@ -221,6 +221,55 @@ Ohne es stünden nach dem Zurückspielen alle Felder richtig, und der
 Miniserver käme trotzdem nicht an das Plugin — deshalb ist es darin, und
 deshalb ist die Datei wie ein Kennwort zu behandeln. Ist sie einmal aus der
 Hand gegangen, entwertet der Knopf *Neues Aktionstoken erzeugen* sie.
+
+## Fassung 0.9.11 — drei Rechenfehler, ein offener Wachposten, ein Reiter, der falsche Bausteine nannte
+
+Eine Durchsicht mit vier unabhängigen Blickwinkeln (Reiter, Rechenkern,
+Hausstandard, Projektdatei der Anlage) hat 33 Befunde ergeben. Die
+gewichtigsten:
+
+**Im Rechenkern.** Ein Uhrsprung nach *vorn* — der Regelfall auf einem
+Raspberry ohne Echtzeituhr — traf `lauf_s` ungebremst: 60 s Lauf, dann
+NTP +3 h, und der Befund lautete *Dauerlauf*, die Sperre stand, `zeitsprung`
+meldete nichts. Der Rücksprung war seit 0.9.8 abgefangen, der Vorwärtssprung
+nie. `lauf_s` wird jetzt summiert und je Durchgang an `stale_s` gemessen.
+
+Jede Lücke im Messwertstrom zählte als zusätzlicher Pumpenstart: zehn
+Ausfälle des Zwischenzählers bei durchlaufender Pumpe ergaben zwölf Starts
+statt einem, dazu zehn erfundene Laufdauern. Ein Übergang von oder zu
+„unbekannt“ ist jetzt keiner.
+
+Jede Mitternacht verlor die Gesamtlaufzeit einen Takt (863 940 statt
+864 540 s über zehn Tage), und ein Lauf, der im Mitternachtstakt endete,
+verlor seinen ganzen Anteil vor Mitternacht.
+
+**Am Wachposten.** Das Formularmerkmal war aus dem Aktionstoken berechenbar —
+und dasselbe Token steht in jeder Adresse, die der Miniserver aufruft, im
+Loxone-Projekt und in beiden Vorlagen. Es hängt jetzt an einem eigenen
+Geheimnis, das nirgendwohin geht. Und eine Sicherungsdatei mit geleertem
+Token wird nicht mehr mit „21 von 21 übernommen“ angenommen.
+
+**Im Reiter *Einbindung in Loxone*.** Vier der sieben Bausteinnamen gibt es in
+Loxone Config nicht, obwohl der Reiter verspricht, man finde sie mit F5 unter
+genau diesem Namen. Der schwerste Fall war die Ausfallerkennung: gesucht
+werden musste die **Analogwertvalidierung** (Parameter *Tmc*: der Wert *muss*
+sich in diesem Intervall ändern), nicht die ähnlich klingende
+Analogwertüberwachung — die ist ein Bereichswächter und hätte nie gemeldet,
+dass ein Zähler stehenbleibt.
+
+Dazu: die Kommentare der Vorlagen werden in Config zum **Anzeigenamen**; sieben
+der 24 waren Fließtext, der längste 202 Zeichen. Sie sind jetzt Beschriftungen
+von höchstens 30 Zeichen, und eine neue Prüfzeile zählt das nach.
+
+**Zwei Prüfungen, die nie gelaufen sind.** Der Suchweg zur Oberflächendatei
+traf weder den Archiv- noch den Installationsbaum. Beide Prüfzeilen, die ihn
+benutzen, zeigten deshalb einen Strich statt eines Hakens — und ein Strich ist
+nicht rot, also fiel es nicht auf. Aufgefallen ist es erst, als eine dritte
+Zeile denselben Weg benutzte.
+
+Der Kern trägt jetzt 98 Prüffälle (vorher 79), die Selbstprüfung 24 Zeilen
+(vorher 22). Neun Korrekturen sind geeicht: jede wird einzeln zurückgebaut,
+und die Prüfung muss dann rot werden.
 
 ## Fassung 0.9.10 — der Stat-Zwischenspeicher
 Die Protokollkappung (512 000 Byte) stand in

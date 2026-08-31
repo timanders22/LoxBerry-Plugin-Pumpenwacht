@@ -92,8 +92,20 @@ list($pw_cfg, $pw_fehlten, $pw_fremd) = pw_cfg_vervollstaendigen();
 
 /* Wortzeichen beim ersten Oeffnen erzeugen, danach nur noch auf
  * ausdruecklichen Wunsch - es steckt in den Adressen im Miniserver. */
-if (empty($pw_cfg['aktionstoken'])) {
-    $pw_cfg['aktionstoken'] = pw_token_erzeugen();
+if (empty($pw_cfg['aktionstoken']) || empty($pw_cfg['formgeheim'])) {
+    if (empty($pw_cfg['aktionstoken'])) {
+        $pw_cfg['aktionstoken'] = pw_token_erzeugen();
+    }
+    /* Das Geheimnis des Formularmerkmals. Es steht NEBEN dem Aktionstoken
+     * und nicht an seiner Stelle: das Aktionstoken geht in jede Adresse im
+     * Miniserver, dieses hier geht nirgendwohin - es wird auf der Seite
+     * nicht angezeigt und in keine Vorlage geschrieben. Bis 0.9.10 war das
+     * Merkmal aus dem Aktionstoken berechenbar, und damit war der
+     * Wachposten fuer jeden offen, der die Adressen im Loxone-Projekt
+     * lesen kann. */
+    if (empty($pw_cfg['formgeheim'])) {
+        $pw_cfg['formgeheim'] = pw_token_erzeugen();
+    }
     pw_config_speichern($pw_cfg);
     $pw_cfg = pw_config();
 }
@@ -285,11 +297,33 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
 if ($pw_ist_post && isset($_POST['mqtt_save'])) {
     $pw_neu = pw_config();
     $pw_neu['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
-    /* Gesaeubert wird in pw_mqtt_thema_saeubern - an EINER Stelle, und die
-     * ist die Bibliothek. Bis 0.9.7 saeuberte nur dieser Handler; ueber eine
-     * zurueckgespielte Sicherung ging ein Thema mit Zeilenumbruch durch. */
-    $pw_neu['mqtt_topic'] = pw_mqtt_thema_saeubern(
-        isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'pumpe');
+    /* Geprueft wird ueber DIESELBE Positivliste wie im Einstellungs-
+     * Handler und in der Sicherung - eine zweite Wahrheit ueber zulaessige
+     * Werte gibt es nicht (pw_grenzen).
+     *
+     * Bis 0.9.10 stand hier nur pw_mqtt_thema_saeubern(), und das bog still
+     * zurecht. Gemessen 31.08.2026 per POST gegen einen echten Webserver:
+     *
+     *     "Pumpe Keller!!" -> "PumpeKeller"   Meldung "Gespeichert."
+     *     "###"            -> "pumpe"         Meldung "Gespeichert."
+     *     (leer)           -> "pumpe"         Meldung "Gespeichert."
+     *     90 Zeichen       -> auf 64 gekuerzt Meldung "Gespeichert."
+     *
+     * Das Thema ist die Adresse in Loxone. Ein stiller Wechsel von
+     * pumpe_keller auf pumpe macht JEDEN virtuellen Eingang tot, ohne dass
+     * eine Zeile darauf hinweist. REGELN_1, Abschnitt 4: Eingaben abweisen,
+     * nicht stillschweigend zurechtbiegen.
+     *
+     * pw_mqtt_thema_saeubern() bleibt trotzdem stehen und wird weiter
+     * gebraucht - fuer den Weg ueber eine zurueckgespielte Sicherung und
+     * beim Senden selbst. Hier davor steht jetzt die Pruefung. */
+    $pw_thema_roh = isset($_POST['mqtt_topic']) ? (string) $_POST['mqtt_topic'] : '';
+    list($pw_thema_wert, $pw_thema_grund) = pw_wert_pruefen('mqtt_topic', $pw_thema_roh);
+    if ($pw_thema_grund !== '') {
+        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_MUSTER'), pw_t('MQTT.L_TOPIC'));
+    } else {
+        $pw_neu['mqtt_topic'] = pw_mqtt_thema_saeubern($pw_thema_wert);
+    }
     if (pw_config_speichern($pw_neu)) { $pw_meldungen[] = pw_t('ALLG.GESPEICHERT'); }
     else { $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config'])); }
     $pw_tab = 'tab-mqtt';
@@ -726,6 +760,34 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 <tr><td><?= pw_e(pw_t('MQTT.T_THEMA')) ?></td><td><span class="sm-mono"><?= pw_e($pw_topic) ?>/#</span></td></tr>
 </table>
 <div class="sm-hilfe"><?= pw_t('MQTT.H_LEBENSZEICHEN') ?></div>
+
+<?php /* Abo und Themenliste stehen auch hier, nicht nur im Loxone-Reiter:
+   REGELN_2, "Die fuenf Reiter" - der Reiter MQTT traegt alle MQTT-Belange.
+   Beide kommen aus derselben Quelle wie dort (pw_abo_text, pw_felderliste),
+   es gibt also keine zweite Wahrheit, nur eine zweite Ausgabestelle. */ ?>
+<h2><?= pw_abo_titel() ?></h2>
+<div class="sm-hinweis"><?= pw_abo_text() ?></div>
+<?php if ($pw_abolage !== 'v2') { ?>
+<pre class="sm-pre"><?= pw_e($pw_topic) ?>/#</pre>
+<?php } ?>
+
+<h2><?= pw_e(pw_t('MQTT.H_THEMEN')) ?></h2>
+<div class="sm-hilfe"><?= pw_t('MQTT.H_THEMEN_TEXT') ?></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= pw_t('MQTT.SP_THEMA') ?></th><th style="width:12%"><?= pw_t('LOX.SP_EINHEIT') ?></th><th style="width:20%"><?= pw_t('MQTT.SP_RETAIN') ?></th><th style="width:38%"><?= pw_t('LOX.SP_BEDEUTUNG') ?></th></tr>
+<?php foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_mk => $pw_mr): ?>
+<tr><td class="sm-mono"><?= pw_e($pw_topic . '/' . $pw_mk) ?></td><td><?= pw_e($pw_mr['einheit']) ?></td><td><?= pw_t('WORT.NEIN') ?></td><td><?= pw_t($pw_mr['bed']) ?></td></tr>
+<?php endforeach; ?>
+</table>
+</div>
+<?php /* Die Spalte Retain wird nicht behauptet, sondern gezaehlt: das
+   Plugin schickt ueber den UDP-Eingang des Gateways ausschliesslich
+   "publish", nie "retain". Es sind also 0 von allen. Ein Satz "alle Themen
+   sind retained" hat im Bestand schon einmal an sieben Stellen gestanden
+   und war falsch (REGELN_2, 8789). */ ?>
+<div class="sm-hilfe"><?= sprintf(pw_t('MQTT.H_RETAIN'), 0,
+    count(pw_felderliste()) + count(pw_statusliste())) ?></div>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
@@ -751,7 +813,7 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S3_TITEL') ?></b><br><br>
-<?= pw_t('LOX.S3_TEXT') ?>
+<?= str_replace('%TOPIC%', pw_e($pw_topic), pw_t('LOX.S3_TEXT')) ?>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?= pw_t('LOX.SP_TITEL') ?></th><th style="width:14%"><?= pw_t('LOX.SP_EINHEIT') ?></th><th style="width:44%"><?= pw_t('LOX.SP_BEDEUTUNG') ?></th></tr>
@@ -779,6 +841,9 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VI') ?></button>
 </form>
+</div>
+<div class="sm-hilfe"><?= pw_t('LOX.K_VORLAGE_VI_TEXT') ?></div>
+<div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;">
   <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
   <input data-role="none" type="hidden" name="vorlage" value="vo">
@@ -826,6 +891,7 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 <div class="sm-hilfe"><?= pw_t('LOX.BSP_ZU1') ?></div>
 <div class="sm-hilfe"><?= pw_t('LOX.BSP_ZU4') ?></div>
 <div class="sm-hilfe"><?= pw_t('LOX.BSP_ZU6') ?></div>
+<div class="sm-hilfe"><?= pw_t('LOX.BSP_ZU7') ?></div>
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S8_TITEL') ?></b><br><br>
@@ -845,7 +911,11 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 <table class="sm-tbl">
 <tr><th><?= pw_t('BILANZ.SP_TAG') ?></th><th><?= pw_t('BILANZ.SP_LAUF') ?></th><th><?= pw_t('BILANZ.SP_STARTS') ?></th><th><?= pw_t('BILANZ.SP_LAENGSTER') ?></th></tr>
 <?php foreach ($pw_tage as $pw_tg): ?>
-<tr><td><?= pw_e($pw_tg['tag']) ?></td><td><?= pw_e(round($pw_tg['lauf_s'] / 60, 1)) ?> min</td><td><?= (int) $pw_tg['starts'] ?></td><td><?= pw_e(round($pw_tg['laengster'] / 60, 1)) ?> min</td></tr>
+<?php /* Jeder Schluessel einzeln gefragt. Ein halb geschriebener Satz in
+   tage.json ergab bis 0.9.10 unter PHP 8 drei Warnungen MITTEN in der
+   Seite - error_reporting maskiert E_NOTICE, aber "Undefined array key"
+   ist seit PHP 8.0 E_WARNING. Gemessen 31.08.2026. */ ?>
+<tr><td><?= pw_e(isset($pw_tg['tag']) ? $pw_tg['tag'] : '?') ?></td><td><?= isset($pw_tg['lauf_s']) ? pw_e(round($pw_tg['lauf_s'] / 60, 1)) . ' min' : '&ndash;' ?></td><td><?= isset($pw_tg['starts']) ? (int) $pw_tg['starts'] : '&ndash;' ?></td><td><?= isset($pw_tg['laengster']) ? pw_e(round($pw_tg['laengster'] / 60, 1)) . ' min' : '&ndash;' ?></td></tr>
 <?php endforeach; ?>
 </table>
 <?php } ?>
@@ -947,7 +1017,10 @@ foreach ($pw_zeilen as $pw_zz) {
 </form>
 </div>
 
-<h3><?= pw_t('TEST.H_AKTION') ?></h3>
+<h3><?= pw_t('TEST.H_SCHALTEN') ?></h3>
+<?php /* Der Satz steht UEBER der Reihe, nicht darunter: wer ihn erst
+   hinterher liest, hat schon gedrueckt (REGELN_2, "Der Reiter Test"). */ ?>
+<p class="sm-hilfe"><?= pw_t('TEST.SCHALTEN_WARNUNG') ?></p>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;display:flex;gap:10px;align-items:center;">
   <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">

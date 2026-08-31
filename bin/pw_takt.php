@@ -54,6 +54,29 @@ if ($pw_home) {
     $pw_kandidaten[] = $pw_home . '/webfrontend/html/plugins/'
                      . basename(dirname(__FILE__)) . '/pw_lib.php';
 }
+/* Aus dem EIGENEN Ort abgeleitet, ohne jede Umgebungsvariable. Im
+ * installierten Zustand liegt dieses Skript unter
+ * <lbhome>/bin/plugins/<ordner>/, die Bibliothek unter
+ * <lbhome>/webfrontend/html/plugins/<ordner>/ - also drei Ebenen hoch und
+ * wieder hinunter.
+ *
+ * Bis 0.9.10 hingen zwei der drei Kandidaten an LBHOMEDIR, und der dritte
+ * traf nur den ENTPACKTEN Archivbaum (dort liegen bin/ und webfrontend/
+ * nebeneinander). Gemessen 31.08.2026 im nachgebauten Installationsaufbau
+ * ohne LBHOMEDIR: Abbruch mit Rueckgabewert 2 -
+ *
+ *     pw_lib.php an keiner der erwarteten Stellen gefunden:
+ *       .../inst/bin/plugins/webfrontend/html/pw_lib.php
+ *
+ * waehrend die Referenzlinie (aWATTar, bin/cron.php) unter denselben
+ * Bedingungen OK meldete: sie traegt diesen Kandidaten. cron.01min setzt
+ * die Variable nicht; preupgrade.sh und uninstall/uninstall setzen sie
+ * ausdruecklich, der Autor kennt die Abhaengigkeit also.
+ *
+ * Ob LoxBerrys Cron LBHOMEDIR exportiert, ist hier nicht messbar. Der
+ * fehlende Kandidat ist der Befund; die Wirkung haengt daran. */
+$pw_kandidaten[] = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/'
+                 . basename(__DIR__) . '/pw_lib.php';
 $pw_kandidaten[] = dirname(__DIR__) . '/webfrontend/html/pw_lib.php';
 
 $pw_lib = '';

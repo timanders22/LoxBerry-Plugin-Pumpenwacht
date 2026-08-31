@@ -31,7 +31,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('PW_KERN', '1.1.0');
+define('PW_KERN', '1.2.0');
 
 /* Die Befunde. Diese Woerter erscheinen uebersetzt in der Oberflaeche; wer
  * hier eines hinzufuegt, muss es in beiden Sprachdateien unter [BEFUND]
@@ -275,7 +275,7 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
         'laeuft'        => $laeuft,
         'seit'          => $seit > 0 ? $seit : $jetzt,
         'starts'        => $starts,
-        'lauf_s'        => 0.0,
+        'lauf_s'        => pw_zahl(isset($alt['lauf_s']) ? $alt['lauf_s'] : 0, 0.0),
         'letzter_lauf_s'=> pw_zahl(isset($alt['letzter_lauf_s']) ? $alt['letzter_lauf_s'] : -1, -1.0),
         'lauf_s_tag'    => pw_zahl(isset($alt['lauf_s_tag']) ? $alt['lauf_s_tag'] : 0, 0.0),
         'starts_tag'    => (int) pw_zahl(isset($alt['starts_tag']) ? $alt['starts_tag'] : 0, 0.0),
@@ -297,6 +297,36 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
      * gezaehlt (siehe pw_starts_im_fenster). */
     $neu['zeitsprung'] = pw_zeitsprung($starts, $jetzt);
 
+    /* Wieviel Zeit eines Schrittes darf als GEMESSENE Laufzeit gelten?
+     *
+     * lauf_s ist die einzige der drei Laufzeiten, die HANDELT: an ihr
+     * haengen Dauerlauf und damit die Sperre. lauf_s_tag und lauf_s_gesamt
+     * sind Statistik und behalten ihren bisherigen Deckel von 3600 s.
+     *
+     * Deshalb bekommt lauf_s nur Zeit gutgeschrieben, die wirklich zwischen
+     * zwei Messungen lag - hoechstens die Veraltungsgrenze des Plugins
+     * (stale_s, Vorgabe 300 s). Ein groesserer Schritt heisst: es wurde
+     * laenger nichts gemessen, als das Plugin selbst noch "bekannt" nennt.
+     * Was die Pumpe in dieser Zeit tat, weiss niemand - und geraten wird
+     * hier nicht.
+     *
+     * Der Anlass ist der Uhrsprung nach VORN: fake-hwclock setzt beim Start
+     * eine alte Zeit, NTP korrigiert Minuten spaeter. Der RUECKsprung war
+     * seit 0.9.8 abgefangen (pw_zeitsprung, pw_starts_im_fenster), der
+     * Vorwaertssprung nie. Gemessen 31.08.2026 an 0.9.10: 60 s Lauf, dann
+     * +3 h -> lauf_s 10860, Befund dauerlauf, Sperre gesetzt, zeitsprung 0.
+     * Mit Quittungspflicht - der Vorgabe - stand die Anlage danach bis zum
+     * Eingriff von Hand gesperrt.
+     *
+     * Ein Deckel von 3600 s haette hier NICHT genuegt: er liegt ueber der
+     * Dauerlauf-Vorgabe von 1800 s. Beim ersten Versuch stand er da, und
+     * der Selbsttest hat ihn umgeworfen. */
+    $pw_stale_s = max(30.0, pw_zahl(isset($cfg['stale_s']) ? $cfg['stale_s'] : 300, 300.0));
+    $gemessen = function ($von, $bis) use ($pw_stale_s) {
+        $d = $bis - $von;
+        return ($d > 0 && $d <= $pw_stale_s) ? (float) $d : 0.0;
+    };
+
     /* Tageswechsel: die Tageszahlen beginnen von vorn. Das Datum kommt von
      * aussen herein, damit der Kern keine Uhr braucht und die Zeitzone dort
      * bleibt, wo sie hingehoert.
@@ -313,9 +343,25 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
     $anrechnen_ab = $vorher;
     if ($tag_neu !== '' && $neu['tag'] === '') { $neu['tag'] = $tag_neu; }
     if ($tagwechsel) {
-        if ($alt_laeuft === 1 && $laeuft === 1 && $vorher > 0
+        /* Der Anteil VOR Mitternacht gehoert auf den alten Tag - und in
+         * die Gesamtlaufzeit. Bis 0.9.10 stand hier nur lauf_s_tag;
+         * lauf_s_gesamt (und damit betrieb_h und beide Wartungszaehler)
+         * verlor jede Mitternacht einen ganzen Takt. Gemessen 31.08.2026,
+         * 60-s-Takt, zehn Tage Dauerlauf: 863940 statt 864540 s.
+         *
+         * Und die Bedingung verlangte zusaetzlich "$laeuft === 1". Ging die
+         * Pumpe in genau dem Takt aus, der Mitternacht ueberschritt, fiel
+         * der Anteil vor Mitternacht GANZ weg - aus der Tagesbilanz UND aus
+         * der Gesamtlaufzeit (gemessen: 300 s von 700 verloren). Ob sie
+         * JETZT noch laeuft, sagt nichts darueber, ob sie es VOR Mitternacht
+         * tat; dafuer steht $alt_laeuft da. */
+        if ($alt_laeuft === 1 && $vorher > 0
             && $tagbeginn > $vorher && $tagbeginn <= $jetzt) {
-            $neu['lauf_s_tag'] += max(0.0, min(3600.0, $tagbeginn - $vorher));
+            $zu = max(0.0, min(3600.0, $tagbeginn - $vorher));
+            $neu['lauf_s_tag'] += $zu;
+            $neu['lauf_s_gesamt'] += $zu;
+            /* Der Lauf selbst kennt keine Tagesgrenze. */
+            $neu['lauf_s'] += $gemessen($vorher, $tagbeginn);
         }
         /* Den abgeschlossenen Tag herausreichen, BEVOR er geleert wird. */
         $neu['vortag'] = array(
@@ -331,16 +377,46 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
         $anrechnen_ab = ($tagbeginn > $vorher && $tagbeginn <= $jetzt) ? $tagbeginn : $jetzt;
     }
 
-    /* Zustandswechsel */
-    if ($laeuft !== $alt_laeuft) {
+    /* Zustandswechsel.
+     *
+     * "unbekannt" (-1) ist KEIN Zustand der Pumpe, sondern eine Luecke in
+     * der Messung. Ein Uebergang von oder zu -1 darf deshalb weder einen
+     * Start buchen noch einen Lauf beenden. Bis 0.9.10 tat er beides:
+     * gemessen 31.08.2026 an durchlaufender Pumpe mit zehn Ausfaellen des
+     * Zwischenzaehlers - starts_gesamt 12 statt 1, dazu zehn erfundene
+     * letzter_lauf_s. Betroffen waren starts_tag, starts_gesamt, das
+     * Schaltspielfenster, beide Wartungszaehler und die Tagesbilanz; ein
+     * flackerndes WLAN sah danach aus wie ein wasserschlagendes Ventil.
+     *
+     * Das widersprach dem eigenen Grundsatz des Plugins (siehe pw_laeuft):
+     * unbekannt ist nicht null. Aus fehlender Auskunft wurde hier eine
+     * positive Behauptung.
+     *
+     * Der ERSTE Messwert ueberhaupt ist dagegen keine Luecke, sondern der
+     * Anfang der Buchfuehrung: dort gab es nie eine Auskunft, die
+     * verlorengehen konnte ($vorher === 0). Ohne diese Unterscheidung
+     * bliebe der erste Lauf nach jedem Dienststart ungezaehlt - der
+     * Kernselbsttest hat das sofort gemeldet, 19 statt 20 Starts. */
+    $luecke = ($laeuft < 0 || ($alt_laeuft < 0 && $vorher > 0));
+    if ($laeuft !== $alt_laeuft && $luecke) {
+        /* In die Luecke hinein oder aus ihr heraus: fuer die MESSUNG
+         * beginnt der Lauf neu. Was waehrend der Luecke geschah, weiss
+         * niemand - es wird weder gezaehlt noch geschaetzt. */
+        $neu['seit'] = $jetzt;
+        $neu['lauf_s'] = 0.0;
+    } elseif ($laeuft !== $alt_laeuft) {
         if ($laeuft === 1) {
             $starts[] = $jetzt;
             $neu['starts_tag']++;
             $neu['starts_gesamt']++;
             $neu['anfrage_seit'] = 0.0;   // die Anforderung ist erfuellt
-        } elseif ($alt_laeuft === 1) {
-            // Ein Lauf ist zu Ende - seine Dauer wird festgehalten.
-            $dauer = max(0.0, $jetzt - $seit);
+            $neu['lauf_s'] = 0.0;
+        } else {
+            /* Ein Lauf ist zu Ende - seine Dauer wird festgehalten. Sie
+             * kommt aus der SUMMIERTEN Laufzeit, nicht mehr aus
+             * (jetzt - seit): sonst zaehlte ein Uhrsprung mit. */
+            $dauer = $neu['lauf_s']
+                   + ($anrechnen_ab > 0 ? $gemessen($anrechnen_ab, $jetzt) : 0.0);
             $neu['letzter_lauf_s'] = $dauer;
             /* Der laengste Lauf DES TAGES zaehlt nur den Teil, der in diesem
              * Tag lag. Sonst waere laengster_tag nach einem Lauf ueber
@@ -348,7 +424,7 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
              * und beides steht nebeneinander in Loxone. */
             $imtag = $dauer;
             if ($tagbeginn > 0 && $seit < $tagbeginn) {
-                $imtag = max(0.0, $jetzt - $tagbeginn);
+                $imtag = max(0.0, min(86400.0, $jetzt - $tagbeginn));
             }
             $neu['laengster_tag'] = max($neu['laengster_tag'], $imtag);
             /* Das ANGEBROCHENE Intervall gehoert zur Tageslaufzeit. Bis
@@ -369,7 +445,6 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
     $neu['starts'] = pw_starts_stutzen($starts, $jetzt, 172800, pw_starts_deckel($cfg));
 
     if ($laeuft === 1) {
-        $neu['lauf_s'] = max(0.0, $jetzt - $neu['seit']);
         // Laufzeit des Tages fortschreiben - anhand des Abstands zum letzten
         // Durchlauf, nicht anhand des Takts: ein ausgefallener Durchlauf
         // soll die Bilanz nicht verfaelschen.
@@ -377,7 +452,10 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
             $zu = max(0.0, min(3600.0, $jetzt - $anrechnen_ab));
             $neu['lauf_s_tag'] += $zu;
             $neu['lauf_s_gesamt'] += $zu;
+            $neu['lauf_s'] += $gemessen($anrechnen_ab, $jetzt);
         }
+    } else {
+        $neu['lauf_s'] = 0.0;
     }
 
     list($befund, $beiwert) = pw_befund(
@@ -701,6 +779,103 @@ function pw_selbsttest($ausgabe = true)
     $szz = pw_schritt(array('watt' => 1.5, 'tag' => '2026-08-11'), $cfg, $sz, $tz - 100000.0);
     $pruef('Uhrsprung erzeugt KEIN Schaltspiel', $szz['befund'], PW_OK);
     $pruef('Uhrsprung wird gemeldet', $szz['zeitsprung'] > 0 ? 1 : 0, 1);
+
+    /* ---- Uhrsprung VORWAERTS (0.9.11) ----
+     *
+     * Der Regelfall auf einem Raspberry ohne Echtzeituhr: fake-hwclock setzt
+     * beim Start eine alte Zeit, NTP korrigiert Minuten spaeter. Bis 0.9.10
+     * war nur der Ruecksprung abgefangen; der Sprung nach vorn traf lauf_s
+     * ungebremst und stellte Dauerlauf samt Sperre. */
+    $cfgv = array('an_w' => 20, 'trocken_w' => 0, 'ueberlast_w' => 0,
+                  'dauerlauf_s' => 1800, 'starts_h' => 0, 'stale_s' => 300,
+                  'sperren_ein' => 1, 'sperre_dauerlauf' => 1,
+                  'quittung_noetig' => 1);
+    $sv = array(); $tv = 2000000.0;
+    $sv = pw_schritt(array('watt' => 600, 'tag' => '2026-08-11'), $cfgv, $sv, $tv);
+    $sv = pw_schritt(array('watt' => 600, 'tag' => '2026-08-11'), $cfgv, $sv, $tv + 60);
+    $pruef('Vorwaertssprung: vorher ein normaler Lauf', $sv['befund'], PW_OK);
+    $sv = pw_schritt(array('watt' => 600, 'tag' => '2026-08-11'), $cfgv, $sv,
+                     $tv + 60 + 10800);
+    $pruef('Uhrsprung +3 h erzeugt KEINEN Dauerlauf', $sv['befund'], PW_OK);
+    $pruef('Uhrsprung +3 h sperrt die Pumpe NICHT', $sv['sperre'], 0);
+    $pruef('Uhrsprung: lauf_s bleibt im zugesagten Bereich',
+           $sv['lauf_s'] <= 86400 ? 1 : 0, 1);
+    /* GEGENPROBE: ein echter langer Lauf muss weiterhin Dauerlauf stellen -
+     * sonst haette die Korrektur den Befund abgeschafft statt geheilt. */
+    $se = array(); $te = 2000000.0;
+    for ($i = 0; $i < 40; $i++) {
+        $se = pw_schritt(array('watt' => 600, 'tag' => '2026-08-11'), $cfgv, $se, $te);
+        $te += 60;
+    }
+    $pruef('GEGENPROBE echter Lauf ueber 1800 s: Dauerlauf', $se['befund'],
+           PW_DAUERLAUF);
+    $pruef('GEGENPROBE: lauf_s zaehlt dabei richtig', $se['lauf_s'], 2340);
+
+    /* ---- Eine Messluecke ist kein Pumpenstart (0.9.11) ----
+     *
+     * Faellt der Zwischenzaehler aus, waehrend die Pumpe laeuft, meldet
+     * pw_laeuft() richtig -1. Bis 0.9.10 buchte pw_schritt() den Weg zurueck
+     * nach 1 als zusaetzlichen Start und beendete beim Hinweg den Lauf mit
+     * einer erfundenen Dauer. Gemessen: zehn Ausfaelle -> 12 Starts statt 1. */
+    $cfgl = array('an_w' => 20, 'trocken_w' => 0, 'ueberlast_w' => 0,
+                  'dauerlauf_s' => 0, 'starts_h' => 0, 'stale_s' => 300);
+    $sl = array(); $tl = 3000000.0;
+    $sl = pw_schritt(array('watt' => 600, 'tag' => '2026-08-11'), $cfgl, $sl, $tl);
+    $pruef('Luecke: der ERSTE Messwert zaehlt als Start', $sl['starts_gesamt'], 1);
+    for ($i = 0; $i < 10; $i++) {
+        $tl += 60;
+        $sl = pw_schritt(array('watt' => null, 'tag' => '2026-08-11'), $cfgl, $sl, $tl);
+        $tl += 60;
+        $sl = pw_schritt(array('watt' => 600, 'tag' => '2026-08-11'), $cfgl, $sl, $tl);
+    }
+    $pruef('zehn Messluecken: KEIN zusaetzlicher Start', $sl['starts_gesamt'], 1);
+    $pruef('zehn Messluecken: auch nicht in der Tagesbilanz', $sl['starts_tag'], 1);
+    $pruef('zehn Messluecken: kein erfundener letzter Lauf',
+           $sl['letzter_lauf_s'], -1);
+    /* GEGENPROBE: ein echtes Aus und Wieder-an zaehlt weiterhin. */
+    $tl += 60;
+    $sl = pw_schritt(array('watt' => 1.5, 'tag' => '2026-08-11'), $cfgl, $sl, $tl);
+    $tl += 60;
+    $sl = pw_schritt(array('watt' => 600, 'tag' => '2026-08-11'), $cfgl, $sl, $tl);
+    $pruef('GEGENPROBE echtes Aus/Ein: zweiter Start', $sl['starts_gesamt'], 2);
+
+    /* ---- Mitternacht verliert nichts mehr (0.9.11) ----
+     *
+     * Bis 0.9.10 buchte der Tageswechsel den Anteil vor Mitternacht nur auf
+     * lauf_s_tag, nie auf lauf_s_gesamt - ein Takt Verlust je Mitternacht.
+     * Und er verlangte, dass die Pumpe JETZT noch laeuft; ging sie in genau
+     * diesem Takt aus, fiel der Anteil ganz weg. */
+    $cfgm = array('an_w' => 20, 'trocken_w' => 0, 'ueberlast_w' => 0,
+                  'dauerlauf_s' => 0, 'starts_h' => 0, 'stale_s' => 300);
+    $mn = 4000000.0;                       // "Mitternacht"
+    /* Ein Lauf, der um mn-600 begann; neun Takte sind gebucht, der Takt von
+     * mn-60 auf mn+40 ueberschreitet Mitternacht. */
+    $vor = array('laeuft' => 1, 'seit' => $mn - 600, 'zeit' => $mn - 60,
+                 'starts' => array(), 'tag' => '2026-08-11',
+                 'lauf_s' => 540.0, 'lauf_s_tag' => 540.0,
+                 'lauf_s_gesamt' => 540.0);
+    /* a) Die Pumpe geht in genau diesem Takt aus. */
+    $sm = pw_schritt(array('watt' => 1.5, 'tag' => '2026-08-12',
+                           'tagbeginn' => $mn), $cfgm, $vor, $mn + 40);
+    $pruef('Mitternachtstakt mit Abschalten: der alte Tag bekam 600 s',
+           $sm['vortag']['lauf_s'], 600);
+    $pruef('Mitternachtstakt mit Abschalten: der neue Tag bekam 40 s',
+           $sm['lauf_s_tag'], 40);
+    $pruef('Mitternachtstakt mit Abschalten: Gesamtlaufzeit 640 s',
+           $sm['lauf_s_gesamt'], 640);
+    $pruef('Mitternachtstakt mit Abschalten: letzter Lauf 640 s',
+           $sm['letzter_lauf_s'], 640);
+    /* GEGENPROBE: alter Tag + neuer Tag ergeben die Gesamtlaufzeit. */
+    $pruef('GEGENPROBE Mitternacht: Vortag + heute = gesamt',
+           $sm['vortag']['lauf_s'] + $sm['lauf_s_tag'], $sm['lauf_s_gesamt']);
+    /* b) Dieselbe Mitternacht mit durchlaufender Pumpe. */
+    $sd = pw_schritt(array('watt' => 600, 'tag' => '2026-08-12',
+                           'tagbeginn' => $mn), $cfgm, $vor, $mn + 40);
+    $pruef('Mitternacht im Lauf: Gesamtlaufzeit 640 s', $sd['lauf_s_gesamt'], 640);
+    $pruef('Mitternacht im Lauf: der Lauf kennt keine Tagesgrenze',
+           $sd['lauf_s'], 640);
+    $pruef('Mitternacht im Lauf: der neue Tag zaehlt nur 40 s',
+           $sd['lauf_s_tag'], 40);
 
     if ($ausgabe) {
         echo sprintf("\nPumpenwacht-Kern %s: %d Faelle geprueft, %d Fehlschlaege.\n",

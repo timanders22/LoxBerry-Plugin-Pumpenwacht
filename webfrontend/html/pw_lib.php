@@ -151,7 +151,7 @@ function pw_json_schreiben($pfad, $daten, $rechte = 0664)
     $pw_d = dirname($pfad);
     if (!is_dir($pw_d)) { @mkdir($pw_d, 0775, true); }
     $tmp = $pfad . '.' . getmypid() . '.neu';
-    if (@file_put_contents($tmp, $json) === false) { return false; }
+    if (@file_put_contents($tmp, $json) === false) { @unlink($tmp); return false; }
     @chmod($tmp, $rechte);
     if (!@rename($tmp, $pfad)) { @unlink($tmp); return false; }
     return true;
@@ -208,6 +208,7 @@ function pw_grenzen()
         'mqtt_ein'           => array('art' => 'haken'),
         'mqtt_topic'         => array('art' => 'text', 'muster' => '#^[\w/\-]{1,64}$#'),
         'aktionstoken'       => array('art' => 'text', 'muster' => '#^[0-9a-f]{0,64}$#'),
+        'formgeheim'         => array('art' => 'text', 'muster' => '#^[0-9a-f]{0,64}$#'),
     );
 }
 
@@ -310,6 +311,10 @@ function pw_vorgaben()
         'mqtt_ein'        => 1,
         'mqtt_topic'      => 'pumpe',
         'aktionstoken'    => '',
+        /* Grundlage des Formularmerkmals. Steht bewusst NEBEN dem
+         * Aktionstoken und nicht an seiner Stelle: das Aktionstoken geht in
+         * jede Loxone-Adresse, dieses hier geht nirgendwohin. */
+        'formgeheim'      => '',
     );
 }
 
@@ -410,7 +415,33 @@ function pw_sperre_holen()
     $p = pw_paths();
     @mkdir($p['datadir'], 0775, true);
     $fh = @fopen($p['sperre'], 'c');
-    if (!$fh) { return null; }
+    if (!$fh) {
+        /* Bis 0.9.10 stand hier "return null" - und beide Aufrufer pruefen
+         * nur auf === false. Bei null lief das ganze Lesen-Rechnen-Schreiben
+         * OHNE Sperre durch, pw_sperre_geben(null) tat nichts, und der
+         * Rueckgabewert meldete Erfolg. Gemessen 31.08.2026 auf beiden
+         * PHP-Fassungen (Sperrpfad als Ordner angelegt): "grund='' , stand
+         * geschrieben: true".
+         *
+         * Damit war genau der Zustand wieder da, den 0.9.8 beseitigt hat -
+         * Cron-Takt, Zuhoerer und Oberflaeche schreiben gleichzeitig -, nur
+         * ohne Meldung. Auf dem Geraet tritt das ein, wenn der Datenordner
+         * nicht beschreibbar ist: falscher Eigentuemer nach einem Rueckspiel
+         * von Hand, oder eine SD-Karte, die nach einem Dateisystemfehler
+         * nur noch lesend eingehaengt ist.
+         *
+         * Jetzt: derselbe Rueckgabewert wie bei einer belegten Sperre, damit
+         * die Aufrufer abbrechen - und EINE Zeile im Protokoll je Prozess,
+         * denn stumm bleiben darf das nicht. */
+        static $gemeldet = false;
+        if (!$gemeldet) {
+            $gemeldet = true;
+            pw_log('SPERRE nicht zu oeffnen: ' . $p['sperre']
+                   . ' - der Datenordner ist vermutlich nicht beschreibbar.'
+                   . ' Es wird NICHTS geschrieben, solange das so ist.');
+        }
+        return false;
+    }
     if (!@flock($fh, LOCK_EX | LOCK_NB)) { @fclose($fh); return false; }
     return $fh;
 }
@@ -505,7 +536,15 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
         } else {
             $neu['watt'] = isset($alt['watt']) ? $alt['watt'] : null;
             $neu['quelle_ts'] = $letzte;
-            $neu['anlieferungen'] = isset($alt['anlieferungen']) ? $alt['anlieferungen'] : array();
+            /* Auch ohne neue Anlieferung wird die Liste ausgeduennt.
+             * pw_anlieferung_merken() wirft Eintraege aelter als 24 h
+             * heraus - bis 0.9.10 geschah das nur, wenn ein Messwert kam.
+             * Blieb die Quelle dauerhaft stumm, fror der Reiter Bilanz auf
+             * einem tage- oder wochenalten Bestand ein und zeigte weiter
+             * "zyklisch, mittlerer Abstand N s", als waere das der
+             * aktuelle Takt. */
+            $neu['anlieferungen'] = pw_anlieferung_stutzen(
+                isset($alt['anlieferungen']) ? $alt['anlieferungen'] : array(), $jetzt);
         }
         /* Einen abgeschlossenen Tag in die Bilanz legen und den Schluessel
          * wieder entfernen - er gehoert nicht in den laufenden Zustand. */
@@ -573,6 +612,23 @@ function pw_zustand_aendern($aendern, $cfg, $erzwingen = true, $jetzt = null)
     } finally {
         pw_sperre_geben($fh);
     }
+}
+
+/**
+ * Die Liste der Anlieferungen ausduennen, ohne eine neue einzutragen.
+ *
+ * Getrennt von pw_anlieferung_merken(), damit der Taktweg sie ebenfalls
+ * kurz haelt - siehe dort.
+ */
+function pw_anlieferung_stutzen($liste, $jetzt, $hoechstens = 120)
+{
+    $aus = array();
+    foreach ((array) $liste as $t) {
+        $z = pw_zahl($t, 0.0);
+        if ($z > 0 && ($jetzt - $z) <= 86400 && $z <= $jetzt + 1) { $aus[] = $z; }
+    }
+    if (count($aus) > $hoechstens) { $aus = array_slice($aus, -$hoechstens); }
+    return $aus;
 }
 
 /** Die letzten Anlieferungszeitpunkte - Grundlage der Taktmessung. */
@@ -666,10 +722,20 @@ function pw_tage($anzahl = 14)
     return array_slice(array_reverse($l), 0, $anzahl);
 }
 
-function pw_vortag()
+function pw_vortag($gestern = null)
 {
     $l = pw_tage(1);
-    return $l ? $l[0] : null;
+    if (!$l) { return null; }
+    $v = $l[0];
+    /* Ohne Datumsangabe wie bisher: der juengste gespeicherte Tag. Mit
+     * Datumsangabe wird geprueft, ob er wirklich gestern ist - solange der
+     * Cron laeuft, wird taeglich ein Satz abgelegt und beides faellt
+     * zusammen; nach einem Stillstand von Tagen nicht mehr. */
+    if ($gestern !== null
+        && (string) (isset($v['tag']) ? $v['tag'] : '') !== (string) $gestern) {
+        return null;
+    }
+    return $v;
 }
 
 /* ---------------- Wartung ---------------- */
@@ -772,7 +838,30 @@ function pw_token_ok($cfg)
 function pw_formtoken($cfg = null)
 {
     if ($cfg === null) { $cfg = pw_config(); }
-    $grund = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    /* Das Merkmal haengt an einem EIGENEN Geheimnis, nicht mehr am
+     * Aktionstoken.
+     *
+     * Bis 0.9.10 stand hier hash_hmac(..., $cfg['aktionstoken']) - eine
+     * reine Funktion des Aktionstokens. Dasselbe Aktionstoken steht aber in
+     * JEDER Adresse, die der Miniserver aufruft, also alle paar Sekunden im
+     * Klartext im LAN, ausserdem im Loxone-Projekt, in beiden erzeugten
+     * Vorlagen und in der Sicherungsdatei. Der Wachposten schuetzte damit
+     * gegen jeden, der den am breitesten gestreuten Wert des Plugins NICHT
+     * kennt.
+     *
+     * Gemessen 31.08.2026 gegen einen laufenden Webserver: Merkmal aus dem
+     * Aktionstoken nachgerechnet, POST damit -> HTTP 200 und die
+     * vollstaendige Konfiguration samt Token als Download.
+     *
+     * Das Geheimnis geht nie hinaus: es steht in keiner Adresse, in keiner
+     * Vorlage und wird auf der Seite nicht angezeigt. Fehlt es (alte
+     * Konfiguration), faellt der Wachposten auf das Aktionstoken zurueck -
+     * das ist der bisherige Stand und immer noch besser als gar nichts;
+     * die Oberflaeche legt beim ersten Aufruf eines an. */
+    $grund = isset($cfg['formgeheim']) ? (string) $cfg['formgeheim'] : '';
+    if ($grund === '') {
+        $grund = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    }
     if ($grund === '') { return ''; }
     return hash_hmac('sha256', 'formular-v1', $grund);
 }
@@ -806,8 +895,19 @@ function pw_formtoken_ok($cfg = null)
  */
 function pw_mqtt_gateway_info()
 {
+    /* Der Zwischenspeicher bekommt eine Verfallszeit.
+     *
+     * Bis 0.9.10 galt er prozessweit. Fuer die kurzlebigen Prozesse (Web,
+     * Cron-Takt) ist das richtig; der Zuhoerer lebt aber bis zu 86400 s.
+     * Aendert sich dort der UDP-Eingang des Gateways oder wird das Gateway
+     * abgeschaltet, veroeffentlichte er bis zum geplanten Tagesende weiter
+     * an den alten Port - und meldete dabei fehl = 0, weil ein fwrite auf
+     * ein UDP-Datagramm immer gelingt. Die Wache des Zuhoerers half nicht:
+     * sie beobachtet pumpenwacht.json, nicht general.json. */
     static $m = null;
-    if ($m !== null) { return $m; }
+    static $bis = 0;
+    if ($m !== null && time() < $bis) { return $m; }
+    $bis = time() + 60;
     $p = pw_paths();
     $m = array('gefunden' => false, 'udpport' => 0, 'autostart' => false, 'fassung' => 0);
     if (!is_file($p['general'])) { return $m; }
@@ -1072,7 +1172,17 @@ function pw_felder($stand, $cfg, $jetzt = null)
     $laeuft = $veraltet ? -1 : (isset($stand['laeuft']) ? (int) $stand['laeuft'] : -1);
     $befund = $veraltet ? PW_STILL : (isset($stand['befund']) ? (string) $stand['befund'] : PW_STILL);
     $grund  = isset($stand['sperrgrund']) ? (string) $stand['sperrgrund'] : '';
-    $vt = pw_vortag();
+    /* "Gestern" ist gestern - nicht der juengste gespeicherte Tag. Stand
+     * der LoxBerry mehrere Tage, meldete LAUF_S_VORTAG bis 0.9.10 einen
+     * alten Tag als gestrigen, ohne dass irgendwo etwas darauf hinwies. */
+    $vt = pw_vortag(date('Y-m-d', (int) $jetzt - 86400));
+    /* Und ein Satz, dem die Werte fehlen, ist kein Satz: (int) null waere 0,
+     * also "gestern 0 s, 0 Starts" statt "unbekannt". Unter PHP 8 kam dazu
+     * ein "Undefined array key" - und weil error_reporting nur E_NOTICE
+     * maskiert, seit PHP 8.0 aber E_WARNING gemeldet wird, stand der
+     * Warntext MITTEN in der Antwortzeile fuer Loxone. Gemessen 31.08.2026
+     * an aktion=zeile mit einem unvollstaendigen tage.json. */
+    $vt_ok = (is_array($vt) && isset($vt['lauf_s']) && isset($vt['starts']));
     $w = pw_wartung($stand);
     return array(
         'laeuft'         => $laeuft,
@@ -1088,8 +1198,8 @@ function pw_felder($stand, $cfg, $jetzt = null)
         'lauf_s_tag'     => isset($stand['lauf_s_tag']) ? (int) $stand['lauf_s_tag'] : 0,
         'starts_tag'     => isset($stand['starts_tag']) ? (int) $stand['starts_tag'] : 0,
         'laengster_tag'  => isset($stand['laengster_tag']) ? (int) $stand['laengster_tag'] : 0,
-        'lauf_s_vortag'  => $vt ? (int) $vt['lauf_s'] : -1,
-        'starts_vortag'  => $vt ? (int) $vt['starts'] : -1,
+        'lauf_s_vortag'  => $vt_ok ? (int) $vt['lauf_s'] : -1,
+        'starts_vortag'  => $vt_ok ? (int) $vt['starts'] : -1,
         'betrieb_h'      => $w['gesamt_h'],
         'zeitsprung'     => isset($stand['zeitsprung']) ? (int) $stand['zeitsprung'] : 0,
         'volt'           => ($veraltet || !isset($stand['volt']) || $stand['volt'] === null)
@@ -1122,12 +1232,35 @@ function pw_zeilen($felder)
     return $aus;
 }
 
+/**
+ * Der Suchtext eines Feldes - EINE Stelle.
+ *
+ * REGELN_3, A11: "Es gibt deshalb EINE Funktion, und alle Stellen rufen
+ * sie." Bis 0.9.10 entstand der Suchtext an drei Stellen unabhaengig
+ * voneinander (Vorlage, pw_eine_zeile, pw_suchtext_stimmig). Alle drei
+ * stimmten ueberein - aber die naechste Aenderung haette sie auseinander
+ * laufen lassen, und die Pruefung haette es nicht gemerkt, weil sie ihren
+ * eigenen Text baut.
+ *
+ * Das fuehrende Semikolon ist kein Schmuck: ohne es traefe LAUF_S= auch
+ * LETZTER_LAUF_S=. Gemessen an der echten Antwortzeile.
+ */
+function pw_check($feld)
+{
+    return ';' . strtoupper($feld) . '=\v';
+}
+
 /** Eine Zeile, in der jedes Feld genau einmal vorkommt - fuer einen VI mit
  *  Befehlserkennung (HTTP-Weg ohne MQTT-Gateway). */
 function pw_eine_zeile($felder)
 {
     $aus = '';
-    foreach ($felder as $k => $v) { $aus .= ';' . strtoupper($k) . '=' . $v; }
+    foreach ($felder as $k => $v) {
+        /* substr(pw_check(), 0, -2) schneidet das  ab - der Rest ist der
+         * Suchtext, den Loxone in der Zeile findet. Eine Stelle, drei
+         * Benutzer: Vorlage, Antwortzeile, Pruefung. */
+        $aus .= substr(pw_check($k), 0, -2) . $v;
+    }
     return $aus . ';';
 }
 
@@ -1165,7 +1298,29 @@ function pw_endpunkt($cfg = null, $host = null)
 
 /* ---------------- Vorlagen fuer Loxone Config ---------------- */
 
-/** Eine Zeile <VirtualInHttpCmd> nach der Form einer echten Config-Ausfuhr. */
+/**
+ * Die kurze Beschriftung eines Feldes - der Name, unter dem der Baustein in
+ * Loxone Config erscheint.
+ *
+ * Sie entsteht aus dem FELDNAMEN, nicht aus einer zweiten getippten Liste:
+ * pw_felderliste() bleibt die eine Quelle. Fehlt der Schluessel, faellt es
+ * auf den Feldnamen zurueck - das ist immer noch eine Beschriftung und nie
+ * ein Fliesstext.
+ */
+function pw_kurz($feld, $texte = null)
+{
+    $sl = 'LOX.K_' . strtoupper($feld);
+    $s = $texte ? $texte($sl) : $sl;
+    return ($s === $sl) ? $feld : $s;
+}
+
+/** Eine Zeile <VirtualInHttpCmd> nach der Form einer echten Config-Ausfuhr.
+ *
+ *  $kommentar ist eine BESCHRIFTUNG, kein Fliesstext: Loxone Config zeigt
+ *  ihn unter Visualisierung -> Anzeigename, das Feld Dokumentation bleibt
+ *  leer (REGELN_2, am Geraet gemessen 18.08.2026). Bis 0.9.10 stand hier
+ *  der volle Erklaertext der Sprachdatei - sieben der 24 Befehle trugen
+ *  einen Namen von ueber 60 Zeichen, der laengste 202. */
 function pw_vi_zeile($titel, $kommentar, $r, $check = ' ')
 {
     return "\t" . '<VirtualInHttpCmd Title="' . pw_x($titel) . '" '
@@ -1192,12 +1347,10 @@ function pw_vorlage_vi($cfg = null, $texte = null)
     $o .= '<VirtualInHttp HintText="" Title="Pumpenwächter" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Werte kommen vom MQTT-Gateway - Abo ' . pw_x($topic) . '/# nötig." Address="http://localhost" PollingTime="604800">' . $crlf;
     $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach (pw_felderliste() as $k => $r) {
-        $o .= pw_vi_zeile($topic . '_' . $k,
-                          $texte ? $texte($r['bed']) : $r['bed'], $r);
+        $o .= pw_vi_zeile($topic . '_' . $k, pw_kurz($k, $texte), $r);
     }
     foreach (pw_statusliste() as $k => $r) {
-        $o .= pw_vi_zeile($topic . '_' . $k,
-                          $texte ? $texte($r['bed']) : $r['bed'], $r);
+        $o .= pw_vi_zeile($topic . '_' . $k, pw_kurz($k, $texte), $r);
     }
     $o .= '</VirtualInHttp>' . $crlf;
     return array('VI_pumpenwaechter.xml', $o);
@@ -1221,8 +1374,7 @@ function pw_vorlage_vi_http($cfg = null, $host = null, $texte = null)
     $o .= '<VirtualInHttp HintText="" Title="Pumpenwächter (HTTP)" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Fragt den Endpunkt selbst ab - ohne MQTT-Gateway. Bitte Adresse prüfen." Address="' . pw_x($adr) . '" PollingTime="30">' . $crlf;
     $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach (array_merge(pw_felderliste(), pw_statusliste()) as $k => $r) {
-        $o .= pw_vi_zeile('pw_' . $k, $texte ? $texte($r['bed']) : $r['bed'],
-                          $r, ';' . strtoupper($k) . '=\v');
+        $o .= pw_vi_zeile('pw_' . $k, pw_kurz($k, $texte), $r, pw_check($k));
     }
     $o .= '</VirtualInHttp>' . $crlf;
     return array('VI_pumpenwaechter_http.xml', $o);
@@ -1244,15 +1396,15 @@ function pw_vorlage_vo($cfg = null, $host = null)
     $crlf = "\r\n";
     $skala = 'SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" ';
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualOut HintText="" Title="Pumpenwächter (LoxBerry-Plugin)" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Bitte Adresse prüfen." Address="http://' . pw_x(pw_host($host)) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    $o .= '<VirtualOut HintText="" Title="Pumpenwächter (LoxBerry-Plugin)" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Bitte Adresse prüfen. Der Befehl „Pumpe angefordert“ wird nur gebraucht, wenn Loxone die Pumpe schaltet - bei einer druckgesteuerten Pumpe bleibt er ungenutzt." Address="http://' . pw_x(pw_host($host)) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
-    $o .= "\t" . '<VirtualOutCmd Title="Messwert liefern (Watt)" Comment="Zwischenzähler-Leistung anliefern; Analogwert am Eingang" ';
+    $o .= "\t" . '<VirtualOutCmd Title="Messwert liefern (Watt)" Comment="Messwert anliefern (Watt)" ';
     $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=wert&watt=<v>') . '" CmdOnHTTP="" CmdOnPost="" ';
     $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="true" Repeat="0" RepeatRate="0" ' . $skala . 'HintText=""/>' . $crlf;
-    $o .= "\t" . '<VirtualOutCmd Title="Sperre quittieren" Comment="Hebt die Sperre nach Prüfung von Hand auf" ';
+    $o .= "\t" . '<VirtualOutCmd Title="Sperre quittieren" Comment="Sperre quittieren" ';
     $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=quittieren') . '" CmdOnHTTP="" CmdOnPost="" ';
     $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
-    $o .= "\t" . '<VirtualOutCmd Title="Pumpe angefordert" Comment="Nur nötig, wenn Loxone die Pumpe schaltet - meldet Ein und Aus für die Anlaufüberwachung" ';
+    $o .= "\t" . '<VirtualOutCmd Title="Pumpe angefordert" Comment="Pumpe angefordert (Ein/Aus)" ';
     $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=anforderung&an=1') . '" CmdOnHTTP="" CmdOnPost="" ';
     $o .= 'CmdOff="' . pw_x($basis . '&aktion=anforderung&an=0') . '" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
     $o .= '</VirtualOut>' . $crlf;
@@ -1440,6 +1592,26 @@ function pw_sicherung_lesen($roh)
     foreach ($daten as $k => $w) {
         if (!array_key_exists($k, $vorg)) {
             $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
+            continue;
+        }
+        /* Ein LEERES Geheimnis nimmt die Sicherung nicht an, wenn eines
+         * steht. Die Positivliste erlaubt die leere Zeichenkette (eine
+         * frische Konfiguration hat noch keine), und der Warnhinweis am
+         * Sicherungsknopf legt ausdruecklich nahe, die Datei vor der
+         * Weitergabe zu entschaerfen. Wer sie danach zuruecksspielte, bekam
+         * bis 0.9.10 "0 Beanstandungen, 21 von 21 uebernommen" - und der
+         * Endpunkt antwortete auf jede Loxone-Adresse mit
+         * KEIN_TOKEN_GESETZT. Beim naechsten Oeffnen der Oberflaeche wurde
+         * ein NEUES Token erzeugt; die Adressen im Miniserver waren damit
+         * endgueltig tot, ohne dass irgendwo etwas beanstandet worden
+         * waere.
+         *
+         * Ueberschrieben wird deshalb nur, wenn die Datei wirklich etwas
+         * mitbringt. Der leere Wert wird GENANNT, nicht verschwiegen. */
+        if (in_array($k, array('aktionstoken', 'formgeheim'), true)
+            && trim((string) $w) === ''
+            && trim((string) (isset($neu[$k]) ? $neu[$k] : '')) !== '') {
+            $mangel[] = sprintf(pw_t('EINST.SICH_LEER_GEHEIM'), pw_e($k));
             continue;
         }
         list($wert, $grund) = pw_wert_pruefen($k, $w);
@@ -1713,6 +1885,22 @@ function pw_selbstpruefung($cfg = null)
     $add('PRUEF.BEFUNDE', pw_befunde_stimmig() ? 1 : 0, (string) count(pw_befund_schluessel()));
     $add('PRUEF.SUCHTEXT', pw_suchtext_stimmig($cfg) ? 1 : 0, '');
 
+    /* Tragen ALLE Formulare das Merkmal des Wachpostens?
+     *
+     * Alle dreizehn tun es - und genau deshalb faellt das Fehlen dieser
+     * Zeile nicht auf. Sie steht wegen der NAECHSTEN Aenderung da: ein
+     * Formular vergisst man beim Erweitern, einen Wachposten am Eingang
+     * nicht (REGELN_2, "was in den Reiter Test gehoert", 20.08.2026). */
+    list($fok, $ftext) = pw_formulare_stimmig();
+    $add('PRUEF.FORMULAR', $fok, $ftext);
+
+    /* Sind die Beschriftungen der Vorlagen kurz genug, um als NAME zu
+     * taugen? Loxone Config zeigt den Comment eines Befehls unter
+     * Visualisierung -> Anzeigename. Bis 0.9.10 waren sieben der 24
+     * Kommentare Fliesstext, der laengste 202 Zeichen. */
+    list($bok, $btext) = pw_beschriftung_stimmig($cfg);
+    $add('PRUEF.BESCHRIFTUNG', $bok, $btext);
+
     /* --- Der Takt --- */
     $add('PRUEF.CRON', is_file(dirname(dirname(__DIR__)) . '/cron/cron.01min')
                        || is_file($p['home'] . '/system/cron/cron.01min/' . $p['plugin']) ? 1 : 2, '');
@@ -1741,7 +1929,12 @@ function pw_endpunkt_probe($cfg = null, $puffer_s = 300)
     $p = pw_paths();
     $datei = $p['datadir'] . '/endpunkt.json';
     $alt = pw_json_lesen($datei);
-    if (isset($alt['ts']) && (time() - (int) $alt['ts']) < $puffer_s) {
+    /* Alle drei Schluessel, nicht nur der Zeitstempel: ein halb
+     * geschriebener Zwischenspeicher ergab sonst ok = 0, also ein rotes
+     * Kreuz "Endpunkt antwortet nicht", ohne dass irgendetwas gemessen
+     * worden waere. Unter PHP 8 dazu zwei Warnungen in der Seite. */
+    if (isset($alt['ts'], $alt['ok'], $alt['text'])
+        && (time() - (int) $alt['ts']) < $puffer_s) {
         return array((int) $alt['ok'], (string) $alt['text']);
     }
     if (trim((string) $cfg['aktionstoken']) === '') { return array(2, ''); }
@@ -1795,6 +1988,65 @@ function pw_endpunkt_probe($cfg = null, $puffer_s = 300)
     return array($ok, $text);
 }
 
+/**
+ * Tragen alle Formulare der Oberflaeche das Merkmal des Wachpostens?
+ *
+ * Gezaehlt wird in der EIGENEN Datei, nicht behauptet: jedes <form> mit
+ * method="post" braucht ein verstecktes Feld name="fmt". Rueckgabe wie bei
+ * den anderen Zeilen: 1 = alle, 0 = es fehlt eines, 2 = Datei nicht lesbar
+ * (ein Strich, kein Haken).
+ */
+function pw_formulare_stimmig()
+{
+    $datei = pw_oberflaechendatei();
+    if ($datei === '') { return array(2, ''); }
+    $q = (string) @file_get_contents($datei);
+    if ($q === '') { return array(2, ''); }
+    /* Nur die abschickenden Formulare zaehlen; ein GET-Formular kann keinen
+     * Zustand aendern und braucht kein Merkmal. */
+    $stuecke = preg_split('/<form\b/i', $q);
+    array_shift($stuecke);
+    $alle = 0; $ohne = 0;
+    foreach ($stuecke as $s) {
+        $ende = strpos($s, '</form>');
+        $s = ($ende === false) ? $s : substr($s, 0, $ende);
+        if (stripos($s, 'method="post"') === false) { continue; }
+        $alle++;
+        if (strpos($s, 'name="fmt"') === false) { $ohne++; }
+    }
+    return array($ohne === 0 ? 1 : 0, ($alle - $ohne) . '/' . $alle);
+}
+
+/**
+ * Taugen die Beschriftungen der Vorlagen als NAME?
+ *
+ * Loxone Config zeigt den Comment eines Befehls unter Visualisierung ->
+ * Anzeigename; das Feld Dokumentation bleibt leer (REGELN_2, am Geraet
+ * gemessen 18.08.2026). Gezaehlt wird an den WIRKLICH erzeugten Dateien,
+ * nicht an der Sprachdatei - sonst prueft man das Muster und nicht die
+ * Aussage. Der Kommentar des WURZELelements ist ausgenommen: dort gehoert
+ * die Erklaerung hin.
+ */
+function pw_beschriftung_stimmig($cfg = null, $hoechstens = 60)
+{
+    $lang = 0; $laengste = 0; $anzahl = 0;
+    foreach (array('vi', 'vihttp', 'vo') as $art) {
+        list(, $xml) = pw_vorlage($art, $cfg, null, 'pw_t');
+        /* Das erste Comment= gehoert zum Wurzelelement und wird uebergangen. */
+        if (!preg_match_all('/Comment="([^"]*)"/', $xml, $m)) { continue; }
+        foreach (array_slice($m[1], 1) as $s) {
+            $anzahl++;
+            $n = function_exists('mb_strlen') ? mb_strlen(html_entity_decode(
+                     $s, ENT_QUOTES, 'UTF-8'), 'UTF-8')
+                 : strlen($s);
+            if ($n > $laengste) { $laengste = $n; }
+            if ($n > $hoechstens) { $lang++; }
+        }
+    }
+    return array($lang === 0 ? 1 : 0,
+                 $anzahl . ' / ' . $laengste . ' Z.');
+}
+
 /** Alle Vorlagen ueber EINEN Namen - so kann die Selbstpruefung sie zaehlen. */
 function pw_vorlage($art, $cfg = null, $host = null, $texte = null)
 {
@@ -1817,7 +2069,7 @@ function pw_vorlage($art, $cfg = null, $host = null, $texte = null)
  * Rueckgabe: array(1|0|2, 'Text'). 2 heisst "Datei nicht lesbar" - ein
  * Strich, kein Haken.
  */
-function pw_reiter_stimmig()
+function pw_oberflaechendatei()
 {
     $kand = array();
     $home = pw_paths();
@@ -1825,9 +2077,26 @@ function pw_reiter_stimmig()
         $kand[] = $home['home'] . '/webfrontend/htmlauth/plugins/'
                 . $home['plugin'] . '/index.php';
     }
-    $kand[] = dirname(dirname(__DIR__)) . '/htmlauth/index.php';
-    $datei = '';
-    foreach ($kand as $k) { if (is_file($k)) { $datei = $k; break; } }
+    /* Der installierte Zustand: die Bibliothek liegt in
+     * <lbhome>/webfrontend/html/plugins/<ordner>/, die Oberflaeche in
+     * <lbhome>/webfrontend/htmlauth/plugins/<ordner>/. */
+    $kand[] = dirname(dirname(__DIR__)) . '/htmlauth/plugins/'
+            . basename(__DIR__) . '/index.php';
+    /* Der entpackte Archivbaum: <wurzel>/webfrontend/html/ neben
+     * <wurzel>/webfrontend/htmlauth/. Bis 0.9.10 stand hier eine Ebene zu
+     * viel (dirname(dirname(__DIR__)) . '/htmlauth/...'), und der Kandidat
+     * zeigte auf <wurzel>/htmlauth/index.php - eine Datei, die es nie gab.
+     * Beide Pruefungen, die diesen Weg benutzen, zeigten deshalb einen
+     * STRICH statt eines Hakens; gemerkt hat es niemand, weil ein Strich
+     * nicht rot ist. */
+    $kand[] = dirname(__DIR__) . '/htmlauth/index.php';
+    foreach ($kand as $k) { if (is_file($k)) { return $k; } }
+    return '';
+}
+
+function pw_reiter_stimmig()
+{
+    $datei = pw_oberflaechendatei();
     if ($datei === '') { return array(2, ''); }
     $txt = (string) @file_get_contents($datei);
     if ($txt === '') { return array(2, ''); }
@@ -1899,7 +2168,12 @@ function pw_suchtext_stimmig($cfg = null)
     $felder['status_quelle_ts'] = 1234567890;
     $zeile = pw_eine_zeile($felder);
     foreach (array_keys($felder) as $k) {
-        if (substr_count($zeile, ';' . strtoupper($k) . '=') !== 1) { return false; }
+        /* Gesucht wird mit DEMSELBEN Text, den die Vorlage schreibt - ohne
+         * das Platzhalterzeichen am Ende. Bis 0.9.10 baute diese Pruefung
+         * ihren Suchtext selbst; sie haette also nicht gemerkt, wenn die
+         * Vorlage ihn eines Tages anders bildet. REGELN_3, A11. */
+        $such = substr(pw_check($k), 0, -2);
+        if (substr_count($zeile, $such) !== 1) { return false; }
     }
     return true;
 }
