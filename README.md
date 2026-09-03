@@ -4,7 +4,7 @@
 Leistungsaufnahme.** Loxone liefert die Watt-Zahl des Zwischenzählers an, das
 Plugin stellt daraus einen Befund und meldet ihn zurück.
 
-Version 0.9.11 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.12 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
 
@@ -221,6 +221,40 @@ Ohne es stünden nach dem Zurückspielen alle Felder richtig, und der
 Miniserver käme trotzdem nicht an das Plugin — deshalb ist es darin, und
 deshalb ist die Datei wie ein Kennwort zu behandeln. Ist sie einmal aus der
 Hand gegangen, entwertet der Knopf *Neues Aktionstoken erzeugen* sie.
+
+## Fassung 0.9.12 — die Überschrift greift der Gateway-Fassung nicht mehr vor
+
+Der Reiter *Einbindung in Loxone* wählt die Überschrift von Schritt 2 nach der
+erkannten Gateway-Fassung. Bei **V1** heißt sie „Abo im MQTT-Gateway
+eintragen", bei **V2** „Datenpunkte in den Abonnements anhaken" — beides
+richtig. Die dritte Lage, *Fassung nicht lesbar*, fiel bis 0.9.11 auf die
+V1-Überschrift zurück.
+
+Der Text darunter nennt in diesem Fall ausdrücklich **beide** Möglichkeiten
+(„Fassung 1: ohne den Eintrag … / Fassung 2: einzutragen ist nichts") — die
+Überschrift darüber gab aber schon eine Anweisung. Für jede Anlage mit
+Gateway V2, deren Fassung sich nicht lesen ließ, stand dort das Falsche, und
+zwar in der größeren Schrift.
+
+Jetzt gibt es drei Überschriften statt zwei. **Eine neutrale für alle Lagen
+wäre die schlechtere Antwort gewesen:** ist die Fassung bekannt, darf und soll
+der Reiter deutlich sein. Neutral wird nur der Fall, in dem wirklich nichts
+bekannt ist.
+
+Dazu sagt der Text jetzt, **wo** die Zeile hingehört — und dass danach zu
+speichern ist. Zur Beschriftung des Abschnitts wird nichts behauptet: im
+Bestand stehen neun „Subscriptions" gegen vier „Abonnements", und das ist
+eine Angabe, kein Messwert. Belegt ist aus dem LoxBerry-Kern nur, dass das
+Formular `subscriptions` heißt und die Einstellungen in
+`config/system/subscriptions.json` liegen; das sichtbare Etikett hängt an der
+Sprache der Oberfläche. Der Satz nennt deshalb **beide** Formen — wer nach
+einem Wort sucht, das seine Oberfläche nicht kennt, sucht länger als einer,
+der zwei liest.
+
+Hinterlegt als `pw12_abo.py` im Prüfstand: alle drei Lagen einzeln
+hergestellt, je Lage die richtige Überschrift verlangt, im Unbekannt-Fall
+ausdrücklich **keine Anweisung** — und geeicht, das heißt der alte Zweizeiler
+wird zurückgebaut und die Prüfung muss dann rot werden.
 
 ## Fassung 0.9.11 — drei Rechenfehler, ein offener Wachposten, ein Reiter, der falsche Bausteine nannte
 
