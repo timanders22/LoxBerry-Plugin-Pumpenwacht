@@ -1496,8 +1496,24 @@ function pw_abo_text()
 
 function pw_abo_titel()
 {
+    /* Drei Lagen, drei Ueberschriften - nicht zwei.
+     *
+     * Bis 0.9.11 fiel die Lage "unbekannt" auf S2_TITEL zurueck, also auf
+     * "Schritt 2: Abo im MQTT-Gateway EINTRAGEN". Der Text darunter
+     * (ABO_UNBEKANNT) nennt in diesem Fall ausdruecklich BEIDE Faelle -
+     * "Fassung 1: ohne den Eintrag ... / Fassung 2: einzutragen ist nichts" -,
+     * waehrend die Ueberschrift schon eine Anweisung gab. Fuer jede Anlage
+     * mit Gateway V2, deren Fassung sich nicht lesen liess, stand dort das
+     * Falsche, und zwar in der groesseren Schrift.
+     *
+     * Eine EINE neutrale Ueberschrift fuer alle drei Lagen waere die
+     * schlechtere Antwort gewesen: bei bekannter Fassung darf und soll der
+     * Reiter deutlich sein. Neutral wird nur der Fall, in dem wirklich
+     * nichts bekannt ist. */
     $lage = pw_abo_lage();
-    return pw_t($lage === 'v2' ? 'LOX.S2_TITEL_V2' : 'LOX.S2_TITEL');
+    if ($lage === 'v2')        { return pw_t('LOX.S2_TITEL_V2'); }
+    if ($lage === 'unbekannt') { return pw_t('LOX.S2_TITEL_UNBEKANNT'); }
+    return pw_t('LOX.S2_TITEL');
 }
 
 /* ==================================================================
