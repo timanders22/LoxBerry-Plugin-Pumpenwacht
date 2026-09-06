@@ -21,13 +21,27 @@
 # Ausdruecklich ueber php aufgerufen: geht bei einem misslungenen Update das
 # Ausfuehrungsrecht verloren, schluege der unmittelbare Aufruf lautlos fehl.
 LOG="REPLACELBPLOGDIR/pumpenwacht.log"
+# Eigene Datei fuer die Ausgabe des Dauerlaeufers. Bis 0.9.12 ging seine
+# Fehlerausgabe mit 2>>"$LOG" in DAS PROTOKOLL, das auch die Oberflaeche
+# anzeigt. Der Zuhoerer laeuft danach stunden- bis tagelang weiter und haelt
+# diesen Deskriptor die ganze Zeit. Verschwindet die Datei darunter - die
+# Ramdisk wird geleert, log_maint raeumt auf -, schreibt er in einen Inode,
+# den es nicht mehr gibt: keine Fehlermeldung, keine Zeile, nichts.
+# Am Geraet gemessen (06.09.2026): PID 924218 hielt pumpenwacht.log auf
+# Deskriptor 2, auf der geloeschten Datei.
+# Der Takt unten behaelt "$LOG": er laeuft eine Sekunde und ist wieder weg,
+# und was er meldet, gehoert ins Protokoll.
+STARTLOG="REPLACELBPLOGDIR/pumpenwacht_start.log"
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
 
 # 1. Waechter. "status" gibt 0 zurueck, wenn er laeuft.
 if [ -f "REPLACELBPBINDIR/pw_dienst.php" ]; then
     if ! php "REPLACELBPBINDIR/pw_dienst.php" status >/dev/null 2>&1; then
         # nohup und &: der Cron soll nicht auf ihn warten.
-        nohup php "REPLACELBPBINDIR/pw_dienst.php" >/dev/null 2>>"$LOG" &
+        # Vor jedem Start geleert - hierher kommt nur, wer wirklich startet,
+        # also traegt die Datei genau einen Lauf.
+        : > "$STARTLOG"
+        nohup php "REPLACELBPBINDIR/pw_dienst.php" >/dev/null 2>>"$STARTLOG" &
     fi
 fi
 

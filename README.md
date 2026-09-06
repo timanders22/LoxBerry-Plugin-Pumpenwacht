@@ -4,9 +4,36 @@
 Leistungsaufnahme.** Loxone liefert die Watt-Zahl des Zwischenzählers an, das
 Plugin stellt daraus einen Befund und meldet ihn zurück.
 
-Version 0.9.12 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.13
+
+### Die Fehlerausgabe des Zuhörers ging ins Protokoll — und hielt es fest
+
+`cron/cron.01min` startete den MQTT-Zuhörer mit
+`nohup php … >/dev/null 2>>"$LOG"` — und `$LOG` ist `pumpenwacht.log`, also
+genau das Protokoll, das die Oberfläche anzeigt. Der Zuhörer läuft danach
+stunden- bis tagelang und hält diesen Deskriptor die ganze Zeit. Verschwindet
+die Datei darunter — `log/plugins` liegt auf einer Ramdisk, und LoxBerrys
+`log_maint` räumt zusätzlich auf —, schreibt er in einen gelöschten Inode:
+keine Fehlermeldung, keine Zeile, nichts.
+
+Am Gerät gemessen (06.09.2026): PID 924218 hielt `pumpenwacht.log` auf
+Deskriptor 2 offen, auf der gelöschten Datei. Sieben Dienste dieser Anlage
+taten dasselbe im selben Moment.
+
+Die Fehlerausgabe des Zuhörers geht jetzt nach `pumpenwacht_start.log`, das
+vor jedem echten Start geleert wird — dorthin kommt nur, wer wirklich startet,
+also trägt die Datei genau einen Lauf. **Der Minutentakt behält das
+Protokoll:** `pw_takt.php` läuft eine Sekunde und ist wieder weg, hält also
+nichts fest, und was er meldet, gehört ins Protokoll.
+
+Im Sandkasten am Gerät geprüft, in beide Richtungen: mit der alten Zeile steht
+die Ausgabe des Zuhörers in `pumpenwacht.log`, mit der neuen in
+`pumpenwacht_start.log`. **Am PHP-Programm ist nichts geändert** — es schreibt
+sein Protokoll Zeile für Zeile und war nie betroffen.
 
 ## Wofür
 
