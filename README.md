@@ -4,9 +4,20 @@
 Leistungsaufnahme.** Loxone liefert die Watt-Zahl des Zwischenzählers an, das
 Plugin stellt daraus einen Befund und meldet ihn zurück.
 
-Version 0.9.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 0.9.14 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.14
+
+- **Nur Schreibweise.** Die Sprachdateien führten für sichtbare Zeichen
+  noch HTML-Entitäten (`&mdash;`, `&auml;`, `&bdquo;`); jetzt stehen dort die
+  Zeichen selbst — in dieser Fassung **10** Stück. Das ist der Hausbeschluss
+  vom 14.08.2026: mit direkten Zeichen darf `htmlspecialchars` folgenlos
+  zweimal laufen, und die Doppelmaskierung fällt als Fehlerklasse weg.
+  `&nbsp;` und `&shy;` bleiben Entität (unsichtbares Zeichen im Quelltext ist
+  eine Wartungsfalle), ebenso die bedeutungstragenden `&amp;`, `&lt;`, `&gt;`,
+  `&quot;` und `&apos;`. **Am Verhalten ändert sich nichts.**
 
 ## Neu in 0.9.13
 
