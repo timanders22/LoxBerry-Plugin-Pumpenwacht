@@ -31,7 +31,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('PW_KERN', '1.2.0');
+define('PW_KERN', '1.3.0');
 
 /* Die Befunde. Diese Woerter erscheinen uebersetzt in der Oberflaeche; wer
  * hier eines hinzufuegt, muss es in beiden Sprachdateien unter [BEFUND]
@@ -49,6 +49,16 @@ define('PW_STILL',       'still');
  * Der Befund ist nur erreichbar, wenn Loxone die Anforderung meldet
  * (aktion=anforderung); ohne sie bleibt der Zweig aus. */
 define('PW_KEIN_ANLAUF', 'kein_anlauf');
+
+/* Seit langem kein Lauf mehr.
+ *
+ * Der achte Befund, und der einzige, der einen STILLSTAND meldet. Alle
+ * anderen setzen voraus, dass die Pumpe laeuft; PW_KEIN_ANLAUF braucht ein
+ * Anforderungssignal aus Loxone. Fuer eine schwimmergesteuerte Pumpe - eine
+ * Sumpfpumpe etwa - gibt es beides nicht, und dort ist "sie laeuft gar nicht
+ * mehr" der eigentliche Schadensfall: Pumpe defekt, FI gefallen, stromlos,
+ * und der Sumpf fuellt sich. */
+define('PW_RUHT', 'ruht');
 
 function pw_zahl($wert, $vorgabe = 0.0)
 {
@@ -71,6 +81,55 @@ function pw_zahl($wert, $vorgabe = 0.0)
  * eigenen Zahlen ein. Die Schalthaeufigkeit von 25 je Stunde ist die vom
  * Hersteller angegebene zulaessige, nicht eine von mir gewaehlte Grenze.
  */
+/**
+ * Die Pumpenarten - sie entscheiden, WELCHE Befunde ueberhaupt gelten.
+ *
+ * Zwei Pumpen im selben Haus stellen verschiedene Fragen, nicht dieselbe
+ * Frage mit anderen Zahlen:
+ *
+ *   hauswasser    Gefahr ist, dass sie FALSCH laeuft. Trockenlauf zerstoert
+ *                 die Wellendichtung in Minuten, Dauerlauf heisst Leck,
+ *                 Schaltspiel heisst Mikroleck. Sperren schuetzt die Pumpe.
+ *
+ *   entwaesserung Gefahr ist, dass sie GAR NICHT laeuft. Trockenlauf ist
+ *                 hier der Normalfall - am Ende jedes Zyklus ist der Sumpf
+ *                 leer und die Pumpe zieht Luft. Und Sperren waere ein
+ *                 Wasserschaden, kein Schutz.
+ *
+ * 'sperrt' ist deshalb keine Vorgabe, sondern eine Zusicherung: pw_sperrt()
+ * fragt sie, bevor es die Konfiguration ueberhaupt ansieht.
+ */
+function pw_arten()
+{
+    return array(
+        'hauswasser' => array(
+            'sperrt'      => true,
+            'name'        => 'ART.HAUSWASSER',
+            /* Vorgaben, die der Artwechsel in der Oberflaeche eintraegt. */
+            'trocken_ein' => true,
+            'ruht_s'      => 0,
+        ),
+        'entwaesserung' => array(
+            'sperrt'      => false,
+            'name'        => 'ART.ENTWAESSERUNG',
+            'trocken_ein' => false,
+            'ruht_s'      => 172800,   // 48 h - die Frist der Anlage
+        ),
+    );
+}
+
+/** Die Art einer Pumpe, mit Rueckfall auf die bisherige Bedeutung. */
+function pw_art($cfg)
+{
+    $a = isset($cfg['art']) ? (string) $cfg['art'] : '';
+    $arten = pw_arten();
+    /* Eine Konfiguration ohne 'art' ist eine aus der Zeit vor 1.0. Sie
+     * beschrieb immer ein Hauswasserwerk - das war die einzige Bauform, die
+     * pw_modelle() kannte. Der Rueckfall ist damit keine Annahme, sondern
+     * die Lesart des alten Formats. */
+    return isset($arten[$a]) ? $a : 'hauswasser';
+}
+
 function pw_modelle()
 {
     return array(
@@ -190,7 +249,8 @@ function pw_starts_deckel($cfg)
  * $anfrage: array('seit' => Zeitpunkt der Anforderung, 0 = keine) - nur
  * belegt, wenn Loxone die Anforderung meldet.
  */
-function pw_befund($mess, $cfg, $lauf_s, $starts, $jetzt, $anfrage = null)
+function pw_befund($mess, $cfg, $lauf_s, $starts, $jetzt, $anfrage = null,
+                   $ruhe = null)
 {
     $laeuft = isset($mess['laeuft']) ? (int) $mess['laeuft'] : -1;
     $watt = isset($mess['watt']) ? $mess['watt'] : null;
@@ -206,6 +266,25 @@ function pw_befund($mess, $cfg, $lauf_s, $starts, $jetzt, $anfrage = null)
     if ($laeuft === 0 && $anlauf_s > 0 && $anf_seit > 0
         && ($jetzt - $anf_seit) >= $anlauf_s) {
         return array(PW_KEIN_ANLAUF, $jetzt - $anf_seit);
+    }
+
+    /* Seit langem kein Lauf.
+     *
+     * Nur wenn die Pumpe MESSBAR steht (0, nicht -1): ohne Messwert weiss
+     * niemand, ob sie laeuft, und aus fehlender Auskunft wird hier keine
+     * Behauptung.
+     *
+     * Und nur, wenn ueberhaupt schon einmal ein Lauf gesehen wurde. Nach
+     * einer Neuinstallation raeumt postupgrade.sh den Zustand ab; ohne diese
+     * Bedingung meldete jede frische Installation nach Ablauf der Frist
+     * einen Schaden, den es nicht gibt. Ein Waechter, der beim Einschalten
+     * Alarm gibt, wird abgeschaltet - und dann fehlt er, wenn es zaehlt. */
+    $ruht_s = pw_zahl(isset($cfg['ruht_s']) ? $cfg['ruht_s'] : 0, 0.0);
+    $ruhe_seit = pw_zahl(isset($ruhe['seit_s']) ? $ruhe['seit_s'] : -1, -1.0);
+    $je_gelaufen = !empty($ruhe['je_gelaufen']);
+    if ($laeuft === 0 && $ruht_s > 0 && $je_gelaufen
+        && $ruhe_seit >= $ruht_s) {
+        return array(PW_RUHT, $ruhe_seit);
     }
 
     if ($laeuft === 1) {
@@ -242,6 +321,18 @@ function pw_befund($mess, $cfg, $lauf_s, $starts, $jetzt, $anfrage = null)
 function pw_sperrt($befund, $cfg)
 {
     if ($befund === PW_OK || $befund === PW_STILL) { return false; }
+    /* Eine Entwaesserungspumpe wird NIE gesperrt - und zwar unabhaengig
+     * davon, was in der Konfiguration steht. Das ist der Unterschied
+     * zwischen einer Vorgabe und einer Zusicherung: eine Vorgabe kann man
+     * versehentlich umstellen, und eine abgeschaltete Sumpfpumpe ist ein
+     * Wasserschaden, kein Schutz.
+     *
+     * Die Haken im Reiter Einstellungen bleiben sichtbar, damit niemand
+     * raetselt, wo sie hin sind - die Oberflaeche sagt daneben, dass sie
+     * fuer diese Art nicht greifen. */
+    $arten = pw_arten();
+    $art = pw_art($cfg);
+    if (empty($arten[$art]['sperrt'])) { return false; }
     $k = 'sperre_' . $befund;
     return !empty($cfg['sperren_ein']) && !empty($cfg[$k]);
 }
@@ -458,10 +549,17 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
         $neu['lauf_s'] = 0.0;
     }
 
+    /* Wie lange steht die Pumpe schon? $neu['seit'] traegt beim Stillstand
+     * den Zeitpunkt, an dem der letzte Lauf endete - der Zustandswechsel
+     * setzt ihn. Bei laufender Pumpe ist die Frage gegenstandslos. */
+    $ruhe_seit = ($laeuft === 0 && $neu['seit'] > 0)
+               ? max(0.0, $jetzt - $neu['seit']) : -1.0;
     list($befund, $beiwert) = pw_befund(
         array('laeuft' => $laeuft, 'watt' => isset($mess['watt']) ? $mess['watt'] : null),
         $cfg, $neu['lauf_s'], $neu['starts'], $jetzt,
-        array('seit' => $neu['anfrage_seit']));
+        array('seit' => $neu['anfrage_seit']),
+        array('seit_s' => $ruhe_seit,
+              'je_gelaufen' => $neu['starts_gesamt'] > 0 ? 1 : 0));
     $neu['befund'] = $befund;
     $neu['beiwert'] = $beiwert;
 
@@ -876,6 +974,93 @@ function pw_selbsttest($ausgabe = true)
            $sd['lauf_s'], 640);
     $pruef('Mitternacht im Lauf: der neue Tag zaehlt nur 40 s',
            $sd['lauf_s_tag'], 40);
+
+    /* ---- Die Pumpenart (1.0.0) ---- */
+    $pruef('Art: ohne Angabe gilt Hauswasserwerk', pw_art(array()), 'hauswasser');
+    $pruef('Art: eine unbekannte Angabe faellt zurueck',
+           pw_art(array('art' => 'quatsch')), 'hauswasser');
+    $pruef('Art: Entwaesserung wird erkannt',
+           pw_art(array('art' => 'entwaesserung')), 'entwaesserung');
+    $pruef('Art: es gibt genau zwei', count(pw_arten()), 2);
+
+    /* Das Sperrverbot ist eine Zusicherung, keine Vorgabe: die Konfiguration
+     * verlangt hier ausdruecklich zu sperren. */
+    $cfg_sp = array('sperren_ein' => 1, 'sperre_trockenlauf' => 1,
+                    'sperre_dauerlauf' => 1);
+    $pruef('Hauswasserwerk sperrt bei Trockenlauf',
+           pw_sperrt(PW_TROCKEN, array_merge($cfg_sp, array('art' => 'hauswasser'))) ? 1 : 0, 1);
+    $pruef('Entwaesserungspumpe sperrt NIE, auch wenn die Konfiguration es will',
+           pw_sperrt(PW_TROCKEN, array_merge($cfg_sp, array('art' => 'entwaesserung'))) ? 1 : 0, 0);
+    $pruef('Entwaesserungspumpe sperrt auch bei Dauerlauf nicht',
+           pw_sperrt(PW_DAUERLAUF, array_merge($cfg_sp, array('art' => 'entwaesserung'))) ? 1 : 0, 0);
+    /* GEGENPROBE: ohne Art bleibt es beim bisherigen Verhalten. */
+    $pruef('GEGENPROBE ohne Art: sperrt wie bisher',
+           pw_sperrt(PW_TROCKEN, $cfg_sp) ? 1 : 0, 1);
+
+    /* ---- Der Ruhebefund (1.0.0) ---- */
+    $cfgr = array('an_w' => 20, 'trocken_w' => 0, 'ueberlast_w' => 0,
+                  'dauerlauf_s' => 0, 'starts_h' => 0, 'stale_s' => 300,
+                  'ruht_s' => 172800);
+    $mess_steht = array('laeuft' => 0, 'watt' => 1.5);
+    $gelaufen = array('seit_s' => 172800.0, 'je_gelaufen' => 1);
+
+    list($b, $w) = pw_befund($mess_steht, $cfgr, 0, array(), 1000000, null, $gelaufen);
+    $pruef('48 h kein Lauf: Befund ruht', $b, PW_RUHT);
+    $pruef('48 h kein Lauf: der Beiwert traegt die Sekunden', $w, 172800);
+
+    /* GEGENPROBE 1: kurz vor der Frist ist nichts. */
+    list($b, ) = pw_befund($mess_steht, $cfgr, 0, array(), 1000000, null,
+                           array('seit_s' => 172799.0, 'je_gelaufen' => 1));
+    $pruef('GEGENPROBE eine Sekunde vor der Frist: ok', $b, PW_OK);
+
+    /* GEGENPROBE 2: die Frist steht auf 0, also aus. */
+    list($b, ) = pw_befund($mess_steht, array_merge($cfgr, array('ruht_s' => 0)),
+                           0, array(), 1000000, null, $gelaufen);
+    $pruef('GEGENPROBE Frist aus: auch nach 48 h ok', $b, PW_OK);
+
+    /* Nie gelaufen heisst nicht vermisst - sonst meldet jede frische
+     * Installation nach 48 h einen Schaden, den es nicht gibt. */
+    list($b, ) = pw_befund($mess_steht, $cfgr, 0, array(), 1000000, null,
+                           array('seit_s' => 172800.0, 'je_gelaufen' => 0));
+    $pruef('nie gelaufen: kein Ruhebefund', $b, PW_OK);
+
+    /* Ohne Messwert wird nichts behauptet. */
+    list($b, ) = pw_befund(array('laeuft' => -1, 'watt' => null), $cfgr, 0,
+                           array(), 1000000, null, $gelaufen);
+    $pruef('ohne Messwert: Stille, kein Ruhebefund', $b, PW_STILL);
+
+    /* Und eine laufende Pumpe ruht nicht. */
+    list($b, ) = pw_befund(array('laeuft' => 1, 'watt' => 600), $cfgr, 10,
+                           array(), 1000000, null, $gelaufen);
+    $pruef('laufende Pumpe: kein Ruhebefund', $b, PW_OK);
+
+    /* ---- Der Ruhebefund im ganzen Durchlauf ---- */
+    $cfgd = array('an_w' => 20, 'trocken_w' => 0, 'ueberlast_w' => 0,
+                  'dauerlauf_s' => 0, 'starts_h' => 0, 'stale_s' => 300,
+                  'ruht_s' => 172800, 'art' => 'entwaesserung',
+                  'sperren_ein' => 1, 'sperre_ruht' => 1, 'quittung_noetig' => 1);
+    $td = 5000000.0;
+    $sr = array();
+    $sr = pw_schritt(array('watt' => 600, 'tag' => '2026-09-08'), $cfgd, $sr, $td);
+    $sr = pw_schritt(array('watt' => 1.5, 'tag' => '2026-09-08'), $cfgd, $sr, $td + 60);
+    $pruef('Durchlauf: ein Lauf ist gezaehlt', $sr['starts_gesamt'], 1);
+    $pruef('Durchlauf: direkt danach kein Ruhebefund', $sr['befund'], PW_OK);
+    /* 48 h spaeter, immer noch stehend. */
+    $sr = pw_schritt(array('watt' => 1.5, 'tag' => '2026-09-10'),
+                     $cfgd, $sr, $td + 60 + 172800);
+    $pruef('Durchlauf: nach 48 h Stillstand kommt der Ruhebefund',
+           $sr['befund'], PW_RUHT);
+    $pruef('Durchlauf: und die Entwaesserungspumpe wird NICHT gesperrt',
+           $sr['sperre'], 0);
+    /* GEGENPROBE: dieselbe Lage als Hauswasserwerk sperrt sehr wohl. */
+    $cfgh = array_merge($cfgd, array('art' => 'hauswasser'));
+    $sh = array();
+    $sh = pw_schritt(array('watt' => 600, 'tag' => '2026-09-08'), $cfgh, $sh, $td);
+    $sh = pw_schritt(array('watt' => 1.5, 'tag' => '2026-09-08'), $cfgh, $sh, $td + 60);
+    $sh = pw_schritt(array('watt' => 1.5, 'tag' => '2026-09-10'),
+                     $cfgh, $sh, $td + 60 + 172800);
+    $pruef('GEGENPROBE Hauswasserwerk: derselbe Befund', $sh['befund'], PW_RUHT);
+    $pruef('GEGENPROBE Hauswasserwerk: und es sperrt', $sh['sperre'], 1);
 
     if ($ausgabe) {
         echo sprintf("\nPumpenwacht-Kern %s: %d Faelle geprueft, %d Fehlschlaege.\n",

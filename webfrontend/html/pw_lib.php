@@ -176,6 +176,13 @@ function pw_grenzen()
 {
     return array(
         'modell'             => array('art' => 'wahl', 'werte' => array('frei', '3-35', '3-45')),
+        /* Der Name steht in der Wahlleiste und sonst nirgends - er geht in
+         * kein Thema und in keine Adresse. Erlaubt ist deshalb viel; was
+         * nicht erlaubt ist, sind Steuerzeichen und eine Laenge, die die
+         * Leiste sprengt. */
+        'name'               => array('art' => 'text', 'muster' => '#^[^\x00-\x1f]{0,40}$#u'),
+        'art'                => array('art' => 'wahl', 'werte' => array('hauswasser', 'entwaesserung')),
+        'ruht_s'             => array('art' => 'zahl', 'min' => 0, 'max' => 2678400),
         'quelle'             => array('art' => 'wahl', 'werte' => array('loxone', 'mqtt')),
         /* Das Thema darf ein # oder + tragen - es ist ein Abo-Muster, kein
          * Veroeffentlichungsziel. Gesaeubert wird es trotzdem: es geht als
@@ -204,6 +211,7 @@ function pw_grenzen()
         'sperre_schaltspiel' => array('art' => 'haken'),
         'sperre_ueberlast'   => array('art' => 'haken'),
         'sperre_kein_anlauf' => array('art' => 'haken'),
+        'sperre_ruht'        => array('art' => 'haken'),
         'quittung_noetig'    => array('art' => 'haken'),
         'mqtt_ein'           => array('art' => 'haken'),
         'mqtt_topic'         => array('art' => 'text', 'muster' => '#^[\w/\-]{1,64}$#'),
@@ -276,6 +284,13 @@ function pw_vorgaben()
 {
     return array(
         'modell'          => 'frei',
+        /* Ohne Angabe ein Hauswasserwerk - das war bis 0.9.14 die einzige
+         * Bauform, die pw_modelle() kannte. */
+        'art'             => 'hauswasser',
+        /* 0 = aus. Der Ruhebefund meldet erst, wenn jemand eine Frist
+         * eintraegt; ein Waechter, der ungefragt Alarm gibt, wird
+         * abgeschaltet. */
+        'ruht_s'          => 0,
         /* Woher der Messwert kommt.
          *
          * 'loxone' ist die Vorgabe und bleibt es: neue Funktionen ab Werk
@@ -303,6 +318,7 @@ function pw_vorgaben()
         'sperre_schaltspiel' => 0,
         'sperre_ueberlast'   => 1,
         'sperre_kein_anlauf' => 1,
+        'sperre_ruht'     => 1,
         'quittung_noetig' => 1,
         // Nach so vielen Sekunden ohne Anlieferung gilt der Zustand als
         // unbekannt (Befund "still") - der Ausfall des Zwischenzaehlers
@@ -328,28 +344,382 @@ function pw_vorgaben()
  * Antwort korrekt 403, Datei trotzdem geschrieben. Siehe REGELN_2,
  * "Der unangemeldete Endpunkt legt auch nichts AN".
  */
+/** Welche Schluessel gehoeren nach OBEN, welche zur Pumpe? */
+function pw_global_schluessel()
+{
+    /* Die Geheimnisse gelten fuer das Plugin, nicht fuer eine Pumpe - sie
+     * stehen in den Adressen, die der Miniserver aufruft. Und mqtt_ein ist
+     * der Schalter "veroeffentlicht dieses Plugin ueberhaupt"; unter welchem
+     * Praefix, entscheidet die Pumpe. */
+    return array('aktionstoken', 'formgeheim', 'mqtt_ein');
+}
+
+/** Die Werksvorgaben EINER Pumpe. */
+function pw_vorgaben_pumpe()
+{
+    $global = array_flip(pw_global_schluessel());
+    $p = array_diff_key(pw_vorgaben(), $global);
+    /* Kennung und Name gibt es erst seit 1.0.0. */
+    return array_merge(array('id' => 'pumpe', 'name' => ''), $p);
+}
+
+/**
+ * Die Wanderung: aus einer flachen Konfiguration wird eine mit Pumpenliste.
+ *
+ * Sie ist ein FESTPUNKT - zweimal angewandt kommt dasselbe heraus. Das
+ * prueft `pw10_wanderung.py` ausdruecklich nach, weil eine Wanderung, die
+ * bei jedem Aufruf noch einmal wandert, den Zustand langsam zerlegt.
+ *
+ * Drei Faelle:
+ *   - es gibt schon 'pumpen'  -> nur Kennungen und Namen auffuellen
+ *   - es gibt alte flache Schluessel -> genau EINE Pumpe daraus bauen
+ *   - es gibt gar nichts -> eine Pumpe mit Werksvorgaben
+ *
+ * Der dritte Fall weicht bewusst von der Skizze ab, die dort eine LEERE
+ * Liste vorsah. Eine frische Installation ohne Pumpe waere eine Oberflaeche
+ * ohne Inhalt; bis 0.9.14 gab es immer genau eine, und dabei bleibt es.
+ */
+function pw_wandern($d, $vorgaben_fuellen = true)
+{
+    $d = is_array($d) ? $d : array();
+    $global = pw_global_schluessel();
+
+    if (isset($d['pumpen']) && is_array($d['pumpen'])) {
+        $liste = array_values($d['pumpen']);
+    } else {
+        /* Alles, was nicht global ist, gehoert der einen alten Pumpe. Ein
+         * unbekannter Schluessel wandert MIT - er wird an anderer Stelle
+         * beanstandet, aber hier nicht stillschweigend weggeworfen. */
+        $eine = array_diff_key($d, array_flip($global));
+        /* OHNE $vorgaben_fuellen bleibt die Pumpe SPARSAM. Sie bekommt nur
+         * das, was eine Pumpe ueberhaupt ansprechbar macht: eine Kennung.
+         *
+         * Der Unterschied ist beim Zurueckspielen alles: eine Sicherung aus
+         * 0.9.14 mit einem einzigen Schluessel wurde sonst zu einer Pumpe
+         * mit ALLEN Werksvorgaben aufgefuellt - und die sahen danach aus
+         * wie Werte, die in der Datei standen. Modell, Trockenlaufschwelle
+         * und Sperren fielen still auf Werk zurueck. */
+        $vp_id = pw_vorgaben_pumpe();
+        $grund = $vorgaben_fuellen ? pw_vorgaben_pumpe()
+                                   : array('id' => $vp_id['id']);
+        $liste = $eine ? array(array_merge($grund, $eine)) : array($grund);
+    }
+
+    /* Kennungen: vorhandene behalten, fehlende vergeben, doppelte aufloesen. */
+    $vergeben = array();
+    foreach ($liste as $i => $p) {
+        $id = isset($p['id']) ? preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $p['id'])) : '';
+        if ($id === '' || isset($vergeben[$id])) {
+            $id = 'pumpe' . ($i + 1);
+            $n = 2;
+            while (isset($vergeben[$id])) { $id = 'pumpe' . ($i + 1) . '_' . $n++; }
+        }
+        $vergeben[$id] = true;
+        $liste[$i]['id'] = $id;
+        /* Auch hier: nur auffuellen, wenn das ausdruecklich gewollt ist.
+         * Ein erfundener leerer Name ueberschriebe beim Zurueckspielen den
+         * Namen, den die Pumpe traegt - und die Datei hatte dazu gar nichts
+         * gesagt. */
+        if ($vorgaben_fuellen) {
+            if (!isset($liste[$i]['name']) || trim((string) $liste[$i]['name']) === '') {
+                $liste[$i]['name'] = '';
+            }
+            $liste[$i] = array_merge(pw_vorgaben_pumpe(), $liste[$i]);
+        }
+    }
+
+    $neu = array();
+    $vorg = pw_vorgaben();
+    foreach ($global as $g) {
+        if (array_key_exists($g, $d)) {
+            $neu[$g] = $d[$g];
+        } elseif ($vorgaben_fuellen) {
+            $neu[$g] = $vorg[$g];
+        }
+        /* Ohne $vorgaben_fuellen bleibt ein nicht genannter globaler
+         * Schluessel ABWESEND. Fuer eine Sicherungsdatei ist das der
+         * Unterschied zwischen "die Datei sagt dazu nichts" und "die Datei
+         * sagt: leer" - und der zweite Fall loescht ein Geheimnis. */
+    }
+    $neu['pumpen'] = $liste;
+    return $neu;
+}
+
+/**
+ * Das Gegenstueck zu pw_pumpe(): eine flache Sicht wieder auseinanderlegen.
+ *
+ * Der Handler bearbeitet eine flache Konfiguration - so, wie er es immer
+ * getan hat - und gibt sie hier zurueck. Globales geht nach oben, alles
+ * andere in die genannte Pumpe. Schluessel, die weder das eine noch das
+ * andere sind, werden verworfen: sie kaemen aus einem Formular und haetten
+ * die Positivliste ohnehin nicht bestanden.
+ *
+ * Ohne Kennung trifft es die erste Pumpe - dasselbe wie bei pw_pumpe().
+ */
+function pw_pumpe_zurueck($cfg, $flach, $id = null)
+{
+    $global = pw_global_schluessel();
+    $vp = pw_vorgaben_pumpe();
+    $liste = isset($cfg['pumpen']) && is_array($cfg['pumpen'])
+           ? array_values($cfg['pumpen']) : array();
+    if (!$liste) { $liste = array(pw_vorgaben_pumpe()); }
+
+    $i = 0;
+    if ($id !== null) {
+        foreach ($liste as $k => $p) {
+            if (isset($p['id']) && (string) $p['id'] === (string) $id) { $i = $k; break; }
+        }
+    }
+
+    foreach ($global as $g) {
+        if (array_key_exists($g, $flach)) { $cfg[$g] = $flach[$g]; }
+    }
+    foreach ($flach as $k => $v) {
+        if (in_array($k, $global, true)) { continue; }
+        if ($k === 'id' || $k === 'name' || array_key_exists($k, $vp)) {
+            $liste[$i][$k] = $v;
+        }
+    }
+    $cfg['pumpen'] = $liste;
+    return $cfg;
+}
+
+/**
+ * Eine Pumpe anlegen.
+ *
+ * Die Kennung wird aus der Zahl der vorhandenen gebildet und so lange
+ * hochgezaehlt, bis sie frei ist - "pumpe2", "pumpe3". Sie dient zugleich
+ * als MQTT-Praefix: sie ist eindeutig, und pw_praefixe_pruefen() vergleicht
+ * ABSCHNITTE, so dass "pumpe" und "pumpe2" einander nicht verschlucken.
+ *
+ * Die neue Pumpe steht auf Quelle "loxone" ohne Quell-Thema - ab Werk aus.
+ * Wer ihr das Thema der angesehenen Pumpe mitgaebe, haette sofort zwei
+ * Pumpen auf demselben Zaehler, und beide zaehlten.
+ *
+ * Rueckgabe: die Kennung der neuen Pumpe, oder null bei Schreibfehler.
+ */
+function pw_pumpe_anlegen($cfg = null, $name = null)
+{
+    $cfg = $cfg === null ? pw_config() : $cfg;
+    $ids = pw_pumpe_ids($cfg);
+    $n = count($ids) + 1;
+    $id = 'pumpe' . $n;
+    while (in_array($id, $ids, true)) { $id = 'pumpe' . (++$n); }
+
+    $neu = pw_vorgaben_pumpe();
+    $neu['id'] = $id;
+    $neu['name'] = $name === null || trim((string) $name) === ''
+                 ? 'Pumpe ' . $n : trim((string) $name);
+    $neu['mqtt_topic'] = $id;
+    $neu['quelle'] = 'loxone';
+    $neu['quelle_topic'] = '';
+
+    if (!isset($cfg['pumpen']) || !is_array($cfg['pumpen'])) {
+        $cfg['pumpen'] = array();
+    }
+    $cfg['pumpen'][] = $neu;
+    if (!pw_config_speichern($cfg)) { return null; }
+    pw_log('Pumpe angelegt: ' . $id . ' (' . $neu['name'] . ').');
+    return $id;
+}
+
+/**
+ * Eine Pumpe entfernen - samt ihrem Zustand und ihrer Tagesbilanz.
+ *
+ * DIE LETZTE BLEIBT. Ohne Pumpe waere die Oberflaeche leer, und die
+ * Wanderung legte beim naechsten Lesen ohnehin wieder eine an - das Loeschen
+ * saehe aus wie ein Zuruecksetzen auf Werkseinstellung.
+ *
+ * Zustand und Tagesbilanz gehen MIT. Bliebe der Unterbaum liegen, so erbte
+ * eine spaeter mit derselben Kennung angelegte Pumpe fremde Zaehlerstaende.
+ *
+ * Rueckgabe: true, oder ein Grund als Zeichenkette.
+ */
+function pw_pumpe_entfernen($id, $cfg = null)
+{
+    $cfg = $cfg === null ? pw_config() : $cfg;
+    $ids = pw_pumpe_ids($cfg);
+    if (!in_array((string) $id, $ids, true)) { return 'unbekannt'; }
+    if (count($ids) < 2) { return 'letzte'; }
+
+    $liste = array();
+    foreach ($cfg['pumpen'] as $p) {
+        if (isset($p['id']) && (string) $p['id'] === (string) $id) { continue; }
+        $liste[] = $p;
+    }
+    $cfg['pumpen'] = $liste;
+    if (!pw_config_speichern($cfg)) { return 'speichern'; }
+
+    /* Zustand und Tagesbilanz nachziehen. Ein Fehlschlag hier ist KEIN
+     * Fehlschlag des Entfernens - die Pumpe ist fort, und ein liegen
+     * gebliebener Unterbaum ist ein Schoenheitsfehler, kein Datenverlust.
+     * Er wird protokolliert, damit er auffaellt. */
+    $voll = pw_stand_voll();
+    if (isset($voll['pumpen'][$id])) {
+        unset($voll['pumpen'][$id]);
+        if (!pw_stand_voll_speichern($voll)) {
+            pw_log('Pumpe ' . $id . ' entfernt, ihr Zustand blieb liegen.');
+        }
+    }
+    $tv = pw_tage_voll();
+    if (isset($tv['pumpen'][$id])) {
+        unset($tv['pumpen'][$id]);
+        if (!pw_json_schreiben(pw_paths()['tage'], $tv)) {
+            pw_log('Pumpe ' . $id . ' entfernt, ihre Tagesbilanz blieb liegen.');
+        }
+    }
+    pw_log('Pumpe entfernt: ' . $id . '.');
+    return true;
+}
+
+/**
+ * Waechter: hier gehoert die FLACHE Sicht einer Pumpe hin.
+ *
+ * Wer die volle Konfiguration uebergibt, bekommt sonst keine Fehlermeldung -
+ * in der vollen Form gibt es kein trocken_w, und die Funktion nimmt ihre
+ * Vorgabe. Genau so schrieb die Loxone-Vorlage Werksvorgaben in eine Datei,
+ * die der Anwender in Config einliest.
+ *
+ * Repariert wird, nicht abgebrochen: diese Funktionen haengen am
+ * unangemeldeten Endpunkt, und ein Absturz dort waere schlimmer als eine
+ * falsche Zahl. Protokolliert wird trotzdem - eine stille Reparatur ist
+ * das, was die Falle teuer macht.
+ */
+function pw_flach($cfg, $wer = '')
+{
+    if (is_array($cfg) && isset($cfg['pumpen'])) {
+        pw_log('BAUFEHLER: ' . $wer . ' bekam die volle Konfiguration statt der '
+             . 'flachen Sicht einer Pumpe - es wurde die erste genommen.');
+        return pw_pumpe($cfg);
+    }
+    return $cfg;
+}
+
+/** Die Kennungen aller Pumpen, in ihrer Reihenfolge. */
+function pw_pumpe_ids($cfg)
+{
+    $aus = array();
+    foreach (isset($cfg['pumpen']) ? $cfg['pumpen'] : array() as $p) {
+        if (isset($p['id'])) { $aus[] = (string) $p['id']; }
+    }
+    return $aus;
+}
+
+/**
+ * Die FLACHE Sicht einer Pumpe - genau das, was der Rechenkern erwartet.
+ *
+ * Globales wird hineingemischt, damit eine Funktion, die bisher
+ * $cfg['aktionstoken'] las, unveraendert weiterlaeuft. Ohne Kennung kommt
+ * die erste Pumpe; das ist der Weg, auf dem alle bisherigen Aufrufstellen
+ * ohne Aenderung weiterarbeiten.
+ */
+function pw_pumpe($cfg, $id = null)
+{
+    $liste = isset($cfg['pumpen']) && is_array($cfg['pumpen']) ? $cfg['pumpen'] : array();
+    $gewaehlt = null;
+    if ($id !== null) {
+        foreach ($liste as $p) {
+            if (isset($p['id']) && (string) $p['id'] === (string) $id) { $gewaehlt = $p; break; }
+        }
+    }
+    if ($gewaehlt === null) { $gewaehlt = $liste ? $liste[0] : pw_vorgaben_pumpe(); }
+    $oben = array();
+    foreach (pw_global_schluessel() as $g) {
+        if (array_key_exists($g, $cfg)) { $oben[$g] = $cfg[$g]; }
+    }
+    return array_merge(pw_vorgaben_pumpe(), $gewaehlt, $oben);
+}
+
+/**
+ * Verschlucken sich zwei Themenpraefixe?
+ *
+ * Verglichen werden ABSCHNITTE, nicht Zeichenketten: "pumpe" und "pumpe2"
+ * sind verschieden, "pumpe" und "pumpe/a" nicht. Wer hier auf strpos()
+ * prueft, verbietet dem Anwender einen Namen, der nie kollidieren wuerde.
+ *
+ * Rueckgabe: Liste von Beanstandungen (leer = in Ordnung).
+ */
+function pw_praefixe_pruefen($cfg)
+{
+    $mangel = array();
+    $liste = isset($cfg['pumpen']) ? $cfg['pumpen'] : array();
+    $n = count($liste);
+    for ($i = 0; $i < $n; $i++) {
+        for ($j = $i + 1; $j < $n; $j++) {
+            $a = trim((string) (isset($liste[$i]['mqtt_topic']) ? $liste[$i]['mqtt_topic'] : ''));
+            $b = trim((string) (isset($liste[$j]['mqtt_topic']) ? $liste[$j]['mqtt_topic'] : ''));
+            if ($a === '' || $b === '') { continue; }
+            if ($a === $b || strpos($a . '/', $b . '/') === 0
+                          || strpos($b . '/', $a . '/') === 0) {
+                $mangel[] = $a . ' / ' . $b;
+            }
+        }
+    }
+    return $mangel;
+}
+
 function pw_config($erzeugen = true)
 {
     $p = pw_paths();
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
     if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
-        @copy($p['config'], $p['config'] . '.vorher');
+        /* NACHSEHEN statt das @ arbeiten lassen.
+         *
+         * Das @ unterdrueckt die AUSGABE, nicht das EREIGNIS - ein eigener
+         * Fehler-Aufnehmer sieht die Warnung trotzdem, und auf dem LoxBerry
+         * stuende sie dann mitten in einer fremden Seite. Im Normalfall
+         * (Verzeichnis da, Konfiguration fehlt) loesten hier alle drei
+         * Zeilen eine aus; gemessen von Werkzeuge/rendern.py am
+         * 08.09.2026.
+         *
+         * Dieselbe Klasse wie bei pw_json_schreiben() und pw_log(). Das @
+         * bleibt fuer den unvorhergesehenen Fall stehen, aber es ist nicht
+         * mehr der Normalweg. */
+        if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
+        $vorher = $p['config'] . '.vorher';
+        if (is_file($p['config'])) { @copy($p['config'], $vorher); }
         if (@copy($p['sicherung'], $p['config'])) {
             @chmod($p['config'], 0600);
             pw_log('Konfiguration aus der Zweitschrift wiederhergestellt.');
         }
-        @unlink($p['config'] . '.vorher');
+        if (is_file($vorher)) { @unlink($vorher); }
     }
-    return array_merge(pw_vorgaben(), pw_json_lesen($p['config']));
+    /* Gewandert wird bei JEDEM Lesen - nicht nur beim Schreiben. Sonst
+     * haenge die Form davon ab, ob zufaellig einmal gespeichert wurde. */
+    return pw_wandern(pw_json_lesen($p['config']));
 }
 
 function pw_config_speichern($cfg)
 {
     $p = pw_paths();
     /* Fail closed: faellt EIN Wert durch, wird gar nichts geschrieben -
-     * nicht "den einen weglassen". */
+     * nicht "den einen weglassen".
+     *
+     * Seit 1.0.0 ist 'pumpen' ein Feld von Feldern, und pw_wert_taugt()
+     * weist Felder ab. Ohne diese Unterscheidung haette der Schutz die
+     * eigene neue Form abgelehnt - stumm, denn er gibt nur false zurueck.
+     * Gefunden von pw10_wanderung.py, bevor es jemand am Geraet gemerkt
+     * haette.
+     *
+     * Lockerer wird der Schutz dadurch NICHT: in einer Pumpe muss weiterhin
+     * jeder Wert ein Skalar sein, eine zweite Verschachtelungsstufe faellt
+     * durch, und ein 'pumpen', das gar kein Feld ist, ebenso.
+     *
+     * Die Schleifenvariable heisst $pumpe und NICHT $p: $p ist in dieser
+     * Funktion pw_paths(). Beim ersten Versuch hiess sie $p, ueberschrieb
+     * die Pfade, und danach lief $p['config'] ins Leere - "Undefined array
+     * key config", und gespeichert wurde nichts. */
     foreach ($cfg as $k => $v) {
+        if ($k === 'pumpen') {
+            if (!is_array($v)) { return false; }
+            foreach ($v as $pumpe) {
+                if (!is_array($pumpe)) { return false; }
+                foreach ($pumpe as $pv) {
+                    if (!pw_wert_taugt($pv)) { return false; }
+                }
+            }
+            continue;
+        }
         if (!pw_wert_taugt($v)) { return false; }
     }
     if (!pw_json_schreiben($p['config'], $cfg, 0600)) { return false; }
@@ -376,16 +746,40 @@ function pw_cfg_vervollstaendigen()
 {
     $p = pw_paths();
     $roh = pw_json_lesen($p['config']);
-    $vorg = pw_vorgaben();
     $fehlten = array();
     $fremd = array();
-    foreach ($vorg as $k => $v) {
-        if (!array_key_exists($k, $roh)) { $fehlten[] = $k; }
+    /* Global und je Pumpe getrennt zaehlen. Ein Schluessel, der bei Pumpe 2
+     * fehlt, ist etwas anderes als einer, der oben fehlt - und "19 von 19"
+     * waere eine Zahl ohne Aussage, wenn sie beides vermengte. */
+    $cfg = pw_wandern($roh);
+    foreach (pw_global_schluessel() as $g) {
+        if (!array_key_exists($g, $roh)) { $fehlten[] = $g; }
     }
-    foreach ($roh as $k => $v) {
-        if (!array_key_exists($k, $vorg)) { $fremd[] = $k; }
+    $vp = pw_vorgaben_pumpe();
+    $alt_flach = !isset($roh['pumpen']);
+    /* Die Schleifenvariable heisst $pumpe, NICHT $p: $p ist in dieser
+     * Funktion pw_paths(). Ich habe genau diesen Fehler in derselben Runde
+     * ZWEIMAL gemacht - hier und in pw_config_speichern(). Beide Male lief
+     * danach $p['config'] ins Leere, beide Male hat ein Werkzeug es
+     * gefunden und nicht ich. */
+    foreach ($cfg['pumpen'] as $i => $pumpe) {
+        $quelle = $alt_flach ? $roh : (isset($roh['pumpen'][$i]) ? $roh['pumpen'][$i] : array());
+        foreach ($vp as $k => $v) {
+            if (!array_key_exists($k, $quelle)) { $fehlten[] = $pumpe['id'] . '.' . $k; }
+        }
+        foreach ($quelle as $k => $v) {
+            if (!array_key_exists($k, $vp) && !in_array($k, pw_global_schluessel(), true)) {
+                $fremd[] = $pumpe['id'] . '.' . $k;
+            }
+        }
     }
-    $cfg = array_merge($vorg, $roh);
+    if (!$alt_flach) {
+        foreach ($roh as $k => $v) {
+            if ($k !== 'pumpen' && !in_array($k, pw_global_schluessel(), true)) {
+                $fremd[] = $k;
+            }
+        }
+    }
     if ($fehlten && is_file($p['config'])) {
         if (pw_config_speichern($cfg)) {
             pw_log('Konfiguration vervollstaendigt: ' . implode(', ', $fehlten));
@@ -394,8 +788,75 @@ function pw_cfg_vervollstaendigen()
     return array($cfg, $fehlten, $fremd);
 }
 
-function pw_stand() { return pw_json_lesen(pw_paths()['stand']); }
-function pw_stand_speichern($stand) { return pw_json_schreiben(pw_paths()['stand'], $stand); }
+/**
+ * Die Kennung der ERSTEN Pumpe - der Ort, an den ein alter flacher Zustand
+ * wandert. Faellt auf 'pumpe' zurueck, wenn noch keine Konfiguration da ist.
+ */
+function pw_erste_id()
+{
+    $ids = pw_pumpe_ids(pw_config(false));
+    return $ids ? $ids[0] : 'pumpe';
+}
+
+/**
+ * Einen Zustandsbaum wandern: flach -> nach Pumpen getrennt.
+ *
+ * Festpunkt: was schon 'pumpen' traegt, bleibt unangetastet. Ein flacher
+ * Zustand landet VOLLSTAENDIG unter der ersten Pumpe - er traegt laufende
+ * Zahlen, die sich nicht rekonstruieren lassen.
+ */
+function pw_zustand_wandern($d, $erste = null)
+{
+    $d = is_array($d) ? $d : array();
+    if (isset($d['pumpen']) && is_array($d['pumpen'])) { return $d; }
+    if (!$d) { return array('pumpen' => array()); }
+    $erste = $erste === null ? pw_erste_id() : $erste;
+    return array('pumpen' => array($erste => $d));
+}
+
+/** Der ganze Zustandsbaum, alle Pumpen. */
+function pw_stand_voll()
+{
+    return pw_zustand_wandern(pw_json_lesen(pw_paths()['stand']));
+}
+
+function pw_stand_voll_speichern($voll)
+{
+    return pw_json_schreiben(pw_paths()['stand'], $voll);
+}
+
+/**
+ * Der FLACHE Zustand einer Pumpe - genau das, was der Rechenkern erwartet.
+ *
+ * Eine Pumpe ohne Unterbaum bekommt einen LEEREN Zustand, nicht den einer
+ * anderen. Das ist die Eigenschaft, auf die es ankommt: sonst zaehlten zwei
+ * Pumpen auf denselben Zaehler, und niemand saehe es.
+ */
+function pw_stand($id = null)
+{
+    $voll = pw_stand_voll();
+    $id = $id === null ? pw_erste_id() : $id;
+    return isset($voll['pumpen'][$id]) && is_array($voll['pumpen'][$id])
+         ? $voll['pumpen'][$id] : array();
+}
+
+/**
+ * Den flachen Zustand einer Pumpe zurueckschreiben.
+ *
+ * Liest die ganze Datei, legt den eigenen Unterbaum hinein, schreibt sie
+ * zurueck. Der Aufrufer haelt dabei die Sperre - dieselbe wie bisher, denn
+ * es ist dieselbe Datei.
+ */
+function pw_stand_speichern($stand, $id = null)
+{
+    $voll = pw_stand_voll();
+    $id = $id === null ? pw_erste_id() : $id;
+    if (!isset($voll['pumpen']) || !is_array($voll['pumpen'])) {
+        $voll['pumpen'] = array();
+    }
+    $voll['pumpen'][$id] = $stand;
+    return pw_stand_voll_speichern($voll);
+}
 
 /* ==================================================================
  * Sperre um lesen-rechnen-schreiben
@@ -472,11 +933,16 @@ function pw_sperre_geben($fh)
 function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
                         $erzwingen = false, $neben = array())
 {
+    $cfg = pw_flach($cfg, 'pw_verarbeiten');
     $jetzt = $jetzt === null ? time() : $jetzt;
     $fh = pw_sperre_holen();
     if ($fh === false) { return array(null, 'belegt', 0, 0); }
     try {
-        $alt = pw_stand();
+        /* Die Kennung kommt aus der flachen Sicht - pw_pumpe() legt sie
+         * hinein. Ohne sie schriebe jeder Durchlauf in die ERSTE Pumpe, und
+         * zwei Pumpen zaehlten auf denselben Zaehler. */
+        $pw_pid = isset($cfg['id']) ? (string) $cfg['id'] : null;
+        $alt = pw_stand($pw_pid);
         $stale = (float) pw_zahl(isset($cfg['stale_s']) ? $cfg['stale_s'] : 300, 300.0);
         $letzte = pw_zahl(isset($alt['quelle_ts']) ? $alt['quelle_ts'] : 0, 0.0);
 
@@ -549,7 +1015,7 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
         /* Einen abgeschlossenen Tag in die Bilanz legen und den Schluessel
          * wieder entfernen - er gehoert nicht in den laufenden Zustand. */
         if (isset($neu['vortag'])) {
-            pw_tag_ablegen($neu['vortag']);
+            pw_tag_ablegen($neu['vortag'], isset($cfg['id']) ? $cfg['id'] : null);
             unset($neu['vortag']);
         }
         /* Protokoll: Befundwechsel und Sperren, wie bisher - und seit 0.9.8
@@ -578,7 +1044,7 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
             pw_publizieren($neu, $cfg, $jetzt, $erzwingen);
         $neu['mqtt_sig'] = $sig;
         $neu['status_zaehler'] = $zaehler;
-        if (!pw_stand_speichern($neu)) { return array(null, 'speichern', $versucht, $fehl); }
+        if (!pw_stand_speichern($neu, $pw_pid)) { return array(null, 'speichern', $versucht, $fehl); }
         return array($neu, '', $versucht, $fehl);
     } finally {
         pw_sperre_geben($fh);
@@ -601,13 +1067,14 @@ function pw_zustand_aendern($aendern, $cfg, $erzwingen = true, $jetzt = null)
     $fh = pw_sperre_holen();
     if ($fh === false) { return array(null, 'belegt', 0, 0); }
     try {
-        $neu = call_user_func($aendern, pw_stand());
+        $pw_pid = isset($cfg['id']) ? (string) $cfg['id'] : null;
+        $neu = call_user_func($aendern, pw_stand($pw_pid));
         if (!is_array($neu)) { return array(null, 'speichern', 0, 0); }
         list($versucht, $fehl, $sig, $zaehler) =
             pw_publizieren($neu, $cfg, $jetzt, $erzwingen);
         $neu['mqtt_sig'] = $sig;
         $neu['status_zaehler'] = $zaehler;
-        if (!pw_stand_speichern($neu)) { return array(null, 'speichern', $versucht, $fehl); }
+        if (!pw_stand_speichern($neu, $pw_pid)) { return array(null, 'speichern', $versucht, $fehl); }
         return array($neu, '', $versucht, $fehl);
     } finally {
         pw_sperre_geben($fh);
@@ -693,38 +1160,59 @@ function pw_takt($stand = null)
  * Laufzeit, die langsam steigt, ist ein Mikroleck; eine Startzahl, die
  * steigt, ein wasserschlagendes Ventil.
  */
-function pw_tag_ablegen($vortag, $hoechstens = 60)
+/** Die Tagesbilanz aller Pumpen, gewandert wie der Zustand. */
+function pw_tage_voll()
+{
+    $d = pw_json_lesen(pw_paths()['tage']);
+    if (isset($d['pumpen']) && is_array($d['pumpen'])) { return $d; }
+    /* Alte Form: { "tage": [ ... ] } - sie gehoert der ersten Pumpe. */
+    if (isset($d['tage']) && is_array($d['tage'])) {
+        return array('pumpen' => array(pw_erste_id() => array('tage' => $d['tage'])));
+    }
+    return array('pumpen' => array());
+}
+
+function pw_tag_ablegen($vortag, $id = null, $hoechstens = 60)
 {
     if (!is_array($vortag) || !isset($vortag['tag']) || $vortag['tag'] === '') { return false; }
     $p = pw_paths();
-    $tage = pw_json_lesen($p['tage']);
-    if (!isset($tage['tage']) || !is_array($tage['tage'])) { $tage = array('tage' => array()); }
-    foreach ($tage['tage'] as $i => $e) {
+    $voll = pw_tage_voll();
+    $id = $id === null ? pw_erste_id() : $id;
+    $liste = isset($voll['pumpen'][$id]['tage']) && is_array($voll['pumpen'][$id]['tage'])
+           ? $voll['pumpen'][$id]['tage'] : array();
+    $ersetzt = false;
+    foreach ($liste as $i => $e) {
         if (isset($e['tag']) && $e['tag'] === $vortag['tag']) {
-            $tage['tage'][$i] = $vortag;
-            return pw_json_schreiben($p['tage'], $tage);
+            $liste[$i] = $vortag;
+            $ersetzt = true;
+            break;
         }
     }
-    $tage['tage'][] = $vortag;
-    usort($tage['tage'], function ($a, $b) {
-        return strcmp((string) $a['tag'], (string) $b['tag']);
-    });
-    if (count($tage['tage']) > $hoechstens) {
-        $tage['tage'] = array_slice($tage['tage'], -$hoechstens);
+    if (!$ersetzt) {
+        $liste[] = $vortag;
+        usort($liste, function ($a, $b) {
+            return strcmp((string) $a['tag'], (string) $b['tag']);
+        });
+        if (count($liste) > $hoechstens) {
+            $liste = array_slice($liste, -$hoechstens);
+        }
     }
-    return pw_json_schreiben($p['tage'], $tage);
+    $voll['pumpen'][$id] = array('tage' => $liste);
+    return pw_json_schreiben($p['tage'], $voll);
 }
 
-function pw_tage($anzahl = 14)
+function pw_tage($anzahl = 14, $id = null)
 {
-    $t = pw_json_lesen(pw_paths()['tage']);
-    $l = isset($t['tage']) && is_array($t['tage']) ? $t['tage'] : array();
+    $voll = pw_tage_voll();
+    $id = $id === null ? pw_erste_id() : $id;
+    $l = isset($voll['pumpen'][$id]['tage']) && is_array($voll['pumpen'][$id]['tage'])
+       ? $voll['pumpen'][$id]['tage'] : array();
     return array_slice(array_reverse($l), 0, $anzahl);
 }
 
-function pw_vortag($gestern = null)
+function pw_vortag($gestern = null, $id = null)
 {
-    $l = pw_tage(1);
+    $l = pw_tage(1, $id);
     if (!$l) { return null; }
     $v = $l[0];
     /* Ohne Datumsangabe wie bisher: der juengste gespeicherte Tag. Mit
@@ -750,7 +1238,7 @@ function pw_vortag($gestern = null)
  */
 function pw_wartung_setzen($cfg = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     list($neu, ) = pw_zustand_aendern(function ($s) {
         $s['wartung_ts'] = time();
         $s['wartung_lauf_s'] = pw_zahl(isset($s['lauf_s_gesamt']) ? $s['lauf_s_gesamt'] : 0, 0.0);
@@ -781,7 +1269,13 @@ function pw_wartung($stand = null)
 function pw_log($text)
 {
     $p = pw_paths();
-    @mkdir($p['logdir'], 0775, true);
+    /* Fragen statt anlegen - dieselbe Stelle wie in pw_json_schreiben(),
+     * dort seit 0.9.11 behoben. Ein mkdir auf einen vorhandenen Ordner
+     * meldet "File exists"; das @ unterdrueckt die ANZEIGE, ein eigener
+     * Fehler-Aufnehmer sieht sie trotzdem. Hier fiel es nie auf, weil
+     * pw_log() beim Rendern nicht lief - erst der Umbau auf mehrere Pumpen
+     * hat die Zeile erreicht, und rendern.py hat sie sofort gemeldet. */
+    if (!is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
     /* Kappung nach dem Hausmuster (fer_log, FerienFeiertage): ab 500 KiB
      * bleiben die letzten 200 Zeilen stehen. Ohne sie waechst die Datei
      * unbegrenzt - auf einem LoxBerry mit SD-Karte ist das kein
@@ -837,7 +1331,7 @@ function pw_token_ok($cfg)
  */
 function pw_formtoken($cfg = null)
 {
-    if ($cfg === null) { $cfg = pw_config(); }
+    if ($cfg === null) { $cfg = pw_pumpe(pw_config()); }
     /* Das Merkmal haengt an einem EIGENEN Geheimnis, nicht mehr am
      * Aktionstoken.
      *
@@ -967,7 +1461,7 @@ function pw_mqtt_thema_saeubern($t)
 
 function pw_mqtt_thema($cfg = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     return pw_mqtt_thema_saeubern(isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : 'pumpe');
 }
 
@@ -992,7 +1486,7 @@ function pw_mqtt_thema($cfg = null)
  */
 function pw_mqtt_publish($paare, $cfg = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     if (empty($cfg['mqtt_ein'])) { return array(0, 0); }
     $m = pw_mqtt_gateway_info();
     if (!$m['udpport']) { return array(0, 0); }
@@ -1093,7 +1587,7 @@ function pw_befund_zahl($befund)
 {
     $map = array(PW_OK => 0, PW_SCHALTSPIEL => 1, PW_DAUERLAUF => 2,
                  PW_TROCKEN => 3, PW_UEBERLAST => 4, PW_STILL => 5,
-                 PW_KEIN_ANLAUF => 6);
+                 PW_KEIN_ANLAUF => 6, PW_RUHT => 7);
     return isset($map[$befund]) ? $map[$befund] : 5;
 }
 
@@ -1102,7 +1596,8 @@ function pw_befund_schluessel()
 {
     return array(0 => 'BEFUND.OK', 1 => 'BEFUND.SCHALTSPIEL', 2 => 'BEFUND.DAUERLAUF',
                  3 => 'BEFUND.TROCKENLAUF', 4 => 'BEFUND.UEBERLAST',
-                 5 => 'BEFUND.STILL', 6 => 'BEFUND.KEIN_ANLAUF');
+                 5 => 'BEFUND.STILL', 6 => 'BEFUND.KEIN_ANLAUF',
+                 7 => 'BEFUND.RUHT');
 }
 
 /* ==================================================================
@@ -1122,10 +1617,10 @@ function pw_felderliste()
 {
     return array(
         'laeuft'         => array('signed' => true,  'min' => -1, 'max' => 1,          'einheit' => '<v.0>',     'bed' => 'LOX.B_LAEUFT'),
-        'befund'         => array('signed' => false, 'min' => 0,  'max' => 6,          'einheit' => '<v.0>',     'bed' => 'LOX.B_BEFUND'),
+        'befund'         => array('signed' => false, 'min' => 0,  'max' => 7,          'einheit' => '<v.0>',     'bed' => 'LOX.B_BEFUND'),
         'beiwert'        => array('signed' => true,  'min' => -1, 'max' => 86400,      'einheit' => '<v.1>',     'bed' => 'LOX.B_BEIWERT'),
         'sperre'         => array('signed' => false, 'min' => 0,  'max' => 1,          'einheit' => '<v.0>',     'bed' => 'LOX.B_SPERRE'),
-        'sperrgrund'     => array('signed' => false, 'min' => 0,  'max' => 6,          'einheit' => '<v.0>',     'bed' => 'LOX.B_SPERRGRUND'),
+        'sperrgrund'     => array('signed' => false, 'min' => 0,  'max' => 7,          'einheit' => '<v.0>',     'bed' => 'LOX.B_SPERRGRUND'),
         'quittung'       => array('signed' => false, 'min' => 0,  'max' => 1,          'einheit' => '<v.0>',     'bed' => 'LOX.B_QUITTUNG'),
         'watt'           => array('signed' => true,  'min' => -1, 'max' => 5000,       'einheit' => '<v.1> W',   'bed' => 'LOX.B_WATT'),
         'lauf_s'         => array('signed' => false, 'min' => 0,  'max' => 86400,      'einheit' => '<v.0> s',   'bed' => 'LOX.B_LAUF_S'),
@@ -1146,6 +1641,15 @@ function pw_felderliste()
         'ampere'         => array('signed' => true,  'min' => -1, 'max' => 100,        'einheit' => '<v.2> A',   'bed' => 'LOX.B_AMPERE'),
         'hertz'          => array('signed' => true,  'min' => -1, 'max' => 100,        'einheit' => '<v.2> Hz',  'bed' => 'LOX.B_HERTZ'),
         'quelle_online'  => array('signed' => true,  'min' => -1, 'max' => 1,          'einheit' => '<v.0>',     'bed' => 'LOX.B_QUELLE_ONLINE'),
+        /* NEU in 1.0.0, und ausdruecklich ANS ENDE: ein neues Feld in der
+         * Mitte verschiebt die Reihenfolge in der Statuszeile, und jede beim
+         * Anwender eingetragene Befehlserkennung zeigte danach auf den
+         * falschen Wert (REGELN_2).
+         *
+         * -1 heisst "noch nie einen Lauf gesehen" - nicht "null Sekunden".
+         * Genau diese Unterscheidung entscheidet, ob nach einer frischen
+         * Installation ein Alarm kommt, den es nicht gibt. */
+        'ruht_s'         => array('signed' => true,  'min' => -1, 'max' => 2678400,    'einheit' => '<v.0> s',   'bed' => 'LOX.B_RUHT_S'),
     );
 }
 
@@ -1175,7 +1679,12 @@ function pw_felder($stand, $cfg, $jetzt = null)
     /* "Gestern" ist gestern - nicht der juengste gespeicherte Tag. Stand
      * der LoxBerry mehrere Tage, meldete LAUF_S_VORTAG bis 0.9.10 einen
      * alten Tag als gestrigen, ohne dass irgendwo etwas darauf hinwies. */
-    $vt = pw_vortag(date('Y-m-d', (int) $jetzt - 86400));
+    /* MIT Kennung. Ohne sie kaeme die Tagesbilanz der ERSTEN Pumpe - und
+     * in der Zeile der Sumpfpumpe stuende der gestrige Lauf des
+     * Hauswasserwerks. Eine plausible Zahl am falschen Ort ist teurer als
+     * gar keine: sie faellt nie auf. */
+    $vt = pw_vortag(date('Y-m-d', (int) $jetzt - 86400),
+                    isset($cfg['id']) ? (string) $cfg['id'] : null);
     /* Und ein Satz, dem die Werte fehlen, ist kein Satz: (int) null waere 0,
      * also "gestern 0 s, 0 Starts" statt "unbekannt". Unter PHP 8 kam dazu
      * ein "Undefined array key" - und weil error_reporting nur E_NOTICE
@@ -1208,6 +1717,12 @@ function pw_felder($stand, $cfg, $jetzt = null)
                             ? -1 : round((float) $stand['ampere'], 2),
         'hertz'          => ($veraltet || !isset($stand['hertz']) || $stand['hertz'] === null)
                             ? -1 : round((float) $stand['hertz'], 2),
+        /* Sekunden seit dem letzten Lauf. -1 = es wurde noch nie einer
+         * gesehen; dann kann auch keiner vermisst werden. */
+        'ruht_s'         => (isset($stand['starts_gesamt']) && (int) $stand['starts_gesamt'] > 0
+                             && isset($stand['seit']) && $stand['seit'] > 0
+                             && (int) $laeuft === 0)
+                            ? (int) max(0, $jetzt - $stand['seit']) : -1,
         /* Die Anwesenheit der QUELLE - nicht des Messwerts. Sie veraltet
          * ausdruecklich NICHT mit: der Shelly meldet sein 'online'
          * aufbewahrt, und genau darin liegt der Wert. 'Seit Minuten kein
@@ -1290,10 +1805,15 @@ function pw_host($host = null)
 
 function pw_endpunkt($cfg = null, $host = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     $p = pw_paths();
+    /* Die Kennung gehoert IN die Adresse. Sonst zeigt jede Vorlage und jede
+     * Zeile auf der Seite auf die erste Pumpe, gleich welche gewaehlt ist -
+     * und der Anwender traegt sie so in den Miniserver ein. */
+    $id = isset($cfg['id']) ? trim((string) $cfg['id']) : '';
     return 'http://' . pw_host($host) . '/plugins/' . $p['plugin']
-         . '/index.php?token=' . rawurlencode((string) $cfg['aktionstoken']);
+         . '/index.php?token=' . rawurlencode((string) $cfg['aktionstoken'])
+         . ($id === '' ? '' : '&pumpe=' . rawurlencode($id));
 }
 
 /* ---------------- Vorlagen fuer Loxone Config ---------------- */
@@ -1340,17 +1860,28 @@ function pw_vi_zeile($titel, $kommentar, $r, $check = ' ')
  *  man in einer Projektdatei sieht, baut Config daraus selbst. */
 function pw_vorlage_vi($cfg = null, $texte = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
-    $topic = pw_mqtt_thema($cfg);
+    /* ALLE Pumpen in EINER Datei. Das geht hier, weil die Eingangsnamen das
+     * Themenpraefix der Pumpe tragen - "pumpe_watt" und "sumpfpumpe_watt"
+     * sind von sich aus verschieden. Und es MUSS so gehen: das MQTT-Gateway
+     * schickt alle Themen an denselben Miniserver, und zwei Dateien mit
+     * demselben Titel liest Config uebereinander. */
+    $pumpen = pw_vorlage_pumpen($cfg);
+    $themen = array();
+    foreach ($pumpen as $p) { $themen[] = pw_mqtt_thema($p) . '/#'; }
     $crlf = "\r\n";
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp HintText="" Title="Pumpenwächter" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Werte kommen vom MQTT-Gateway - Abo ' . pw_x($topic) . '/# nötig." Address="http://localhost" PollingTime="604800">' . $crlf;
+    $o .= '<VirtualInHttp HintText="" Title="Pumpenwächter" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Werte kommen vom MQTT-Gateway - Abo ' . pw_x(implode(' ', $themen)) . ' nötig." Address="http://localhost" PollingTime="604800">' . $crlf;
     $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
-    foreach (pw_felderliste() as $k => $r) {
-        $o .= pw_vi_zeile($topic . '_' . $k, pw_kurz($k, $texte), $r);
-    }
-    foreach (pw_statusliste() as $k => $r) {
-        $o .= pw_vi_zeile($topic . '_' . $k, pw_kurz($k, $texte), $r);
+    foreach ($pumpen as $p) {
+        $topic = pw_mqtt_thema($p);
+        /* Der Pumpenname steht im KOMMENTAR, nicht im Eingangsnamen: der
+         * Name geht in Config in die Peripherie und muss kurz bleiben, das
+         * Themenpraefix unterscheidet ohnehin schon. Bei nur einer Pumpe
+         * gar kein Zusatz - dann ist die Datei dieselbe wie bisher. */
+        $zusatz = count($pumpen) > 1 ? ' (' . pw_pumpe_name($p) . ')' : '';
+        foreach (array_merge(pw_felderliste(), pw_statusliste()) as $k => $r) {
+            $o .= pw_vi_zeile($topic . '_' . $k, pw_kurz($k, $texte) . $zusatz, $r);
+        }
     }
     $o .= '</VirtualInHttp>' . $crlf;
     return array('VI_pumpenwaechter.xml', $o);
@@ -1365,19 +1896,35 @@ function pw_vorlage_vi($cfg = null, $texte = null)
  */
 function pw_vorlage_vi_http($cfg = null, $host = null, $texte = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
-    $p = pw_paths();
-    $adr = 'http://' . pw_host($host) . '/plugins/' . $p['plugin']
-         . '/index.php?token=' . rawurlencode((string) $cfg['aktionstoken']) . '&aktion=zeile';
+    /* JE PUMPE EINE DATEI. Ein VirtualInHttp hat GENAU EINE Abfrageadresse,
+     * und die steht an der Wurzel - mehrere Pumpen brauchen mehrere
+     * Wurzeln, und XML hat eine. Deshalb bekommt diese Vorlage eine flache
+     * Sicht und baut genau sie.
+     *
+     * Die Adresse kommt aus pw_endpunkt() und NICHT mehr von Hand: dort
+     * steht seit 1.0.0 das &pumpe=. Von Hand gebaut fragte jede Datei die
+     * erste Pumpe ab, egal welche gemeint war. */
+    $liste = pw_vorlage_pumpen($cfg);
+    $cfg = $liste[0];
+    $mehrere = count(pw_pumpe_ids(pw_config())) > 1;
+    $id = isset($cfg['id']) ? preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $cfg['id'])) : '';
+    $adr = pw_endpunkt($cfg, $host) . '&aktion=zeile';
+    /* Dateiname, Titel und Eingangsnamen tragen die Kennung, sobald es mehr
+     * als eine Pumpe gibt. Ohne das hiessen die Eingaenge beider Dateien
+     * "pw_watt", und Config liesse sie im Projekt nicht nebeneinander
+     * stehen. Bei einer Pumpe bleibt alles wie in 0.9.14. */
+    $vor = $mehrere && $id !== '' ? 'pw_' . $id . '_' : 'pw_';
+    $titel = 'Pumpenwächter (HTTP)' . ($mehrere ? ' - ' . pw_pumpe_name($cfg) : '');
+    $name = 'VI_pumpenwaechter_http' . ($mehrere && $id !== '' ? '_' . $id : '') . '.xml';
     $crlf = "\r\n";
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp HintText="" Title="Pumpenwächter (HTTP)" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Fragt den Endpunkt selbst ab - ohne MQTT-Gateway. Bitte Adresse prüfen." Address="' . pw_x($adr) . '" PollingTime="30">' . $crlf;
+    $o .= '<VirtualInHttp HintText="" Title="' . pw_x($titel) . '" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Fragt den Endpunkt selbst ab - ohne MQTT-Gateway. Bitte Adresse prüfen." Address="' . pw_x($adr) . '" PollingTime="30">' . $crlf;
     $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach (array_merge(pw_felderliste(), pw_statusliste()) as $k => $r) {
-        $o .= pw_vi_zeile('pw_' . $k, pw_kurz($k, $texte), $r, pw_check($k));
+        $o .= pw_vi_zeile($vor . $k, pw_kurz($k, $texte), $r, pw_check($k));
     }
     $o .= '</VirtualInHttp>' . $crlf;
-    return array('VI_pumpenwaechter_http.xml', $o);
+    return array($name, $o);
 }
 
 /** VO-Vorlage (Steuerbefehle) nach dem Heimkino-Muster: templateType 3,
@@ -1391,22 +1938,30 @@ function pw_vorlage_vi_http($cfg = null, $host = null, $texte = null)
  *  an dem einen Befehl, der den Messwert traegt. */
 function pw_vorlage_vo($cfg = null, $host = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
-    $basis = substr(pw_endpunkt($cfg, $host), strlen('http://' . pw_host($host)));
+    /* ALLE Pumpen in EINER Datei: ein VirtualOut hat eine Adresse, und
+     * jeder Befehl traegt den vollen Pfad - der unterscheidet sich nur im
+     * &pumpe= am Ende. */
+    $pumpen = pw_vorlage_pumpen($cfg);
     $crlf = "\r\n";
     $skala = 'SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" ';
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualOut HintText="" Title="Pumpenwächter (LoxBerry-Plugin)" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Bitte Adresse prüfen. Der Befehl „Pumpe angefordert“ wird nur gebraucht, wenn Loxone die Pumpe schaltet - bei einer druckgesteuerten Pumpe bleibt er ungenutzt." Address="http://' . pw_x(pw_host($host)) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
-    $o .= "\t" . '<VirtualOutCmd Title="Messwert liefern (Watt)" Comment="Messwert anliefern (Watt)" ';
-    $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=wert&watt=<v>') . '" CmdOnHTTP="" CmdOnPost="" ';
-    $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="true" Repeat="0" RepeatRate="0" ' . $skala . 'HintText=""/>' . $crlf;
-    $o .= "\t" . '<VirtualOutCmd Title="Sperre quittieren" Comment="Sperre quittieren" ';
-    $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=quittieren') . '" CmdOnHTTP="" CmdOnPost="" ';
-    $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
-    $o .= "\t" . '<VirtualOutCmd Title="Pumpe angefordert" Comment="Pumpe angefordert (Ein/Aus)" ';
-    $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=anforderung&an=1') . '" CmdOnHTTP="" CmdOnPost="" ';
-    $o .= 'CmdOff="' . pw_x($basis . '&aktion=anforderung&an=0') . '" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+    foreach ($pumpen as $p) {
+        $basis = substr(pw_endpunkt($p, $host), strlen('http://' . pw_host($host)));
+        /* Bei einer Pumpe bleiben die Befehlsnamen genau die von 0.9.14 -
+         * ein Zusatz erscheint erst, wenn es etwas zu unterscheiden gibt. */
+        $zusatz = count($pumpen) > 1 ? ' - ' . pw_pumpe_name($p) : '';
+        $o .= "\t" . '<VirtualOutCmd Title="Messwert liefern (Watt)' . pw_x($zusatz) . '" Comment="Messwert anliefern (Watt)' . pw_x($zusatz) . '" ';
+        $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=wert&watt=<v>') . '" CmdOnHTTP="" CmdOnPost="" ';
+        $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="true" Repeat="0" RepeatRate="0" ' . $skala . 'HintText=""/>' . $crlf;
+        $o .= "\t" . '<VirtualOutCmd Title="Sperre quittieren' . pw_x($zusatz) . '" Comment="Sperre quittieren' . pw_x($zusatz) . '" ';
+        $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=quittieren') . '" CmdOnHTTP="" CmdOnPost="" ';
+        $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+        $o .= "\t" . '<VirtualOutCmd Title="Pumpe angefordert' . pw_x($zusatz) . '" Comment="Pumpe angefordert (Ein/Aus)' . pw_x($zusatz) . '" ';
+        $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=anforderung&an=1') . '" CmdOnHTTP="" CmdOnPost="" ';
+        $o .= 'CmdOff="' . pw_x($basis . '&aktion=anforderung&an=0') . '" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+    }
     $o .= '</VirtualOut>' . $crlf;
     return array('VQ_pumpenwaechter.xml', $o);
 }
@@ -1534,7 +2089,7 @@ function pw_abo_titel()
  */
 function pw_sicherung_bauen($cfg = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     $kopf = array(
         '_plugin'  => 'pumpenwacht',
         '_fassung' => pw_fassung(),
@@ -1588,25 +2143,62 @@ function pw_sicherung_lesen($roh)
     if (!is_array($daten)) {
         return array(null, array(pw_t('EINST.SICH_KEIN_JSON')), 0, 0, array());
     }
-    $vorg = pw_vorgaben();
-    $erwartet = count($vorg);
-    /* Der laufende Stand ist die Grundlage. */
-    $neu = pw_config();
-
-    /* 1. Kopf abtrennen. Er wird gelesen, nicht verlangt. */
-    foreach ($daten as $k => $w) {
+    /* Der Kopf wird VOR der Wanderung abgetrennt: '_plugin' und '_fassung'
+     * sind keine Einstellungen und haben in keiner Pumpe etwas zu suchen. */
+    foreach (array_keys($daten) as $k) {
         if (strncmp((string) $k, '_', 1) !== 0) { continue; }
-        if ($k === '_plugin' && (string) $w !== 'pumpenwacht') {
-            $mangel[] = sprintf(pw_t('EINST.SICH_FREMDES_PLUGIN'), pw_e((string) $w));
+        if ($k === '_plugin' && (string) $daten[$k] !== 'pumpenwacht') {
+            $mangel[] = sprintf(pw_t('EINST.SICH_FREMDES_PLUGIN'),
+                                pw_e((string) $daten[$k]));
         }
         unset($daten[$k]);
     }
 
-    /* 2. + 3. Schluessel und Werte. */
+    /* FREMDE SCHLUESSEL OBEN - VOR der Wanderung.
+     *
+     * Die Wanderung baut den oberen Teil NEU auf: Globales und 'pumpen',
+     * sonst nichts. Was sie nicht kennt, wirft sie weg - und danach findet
+     * die Pruefung weiter unten nichts mehr zu beanstanden. Eine Datei mit
+     * {"boese": 1} galt als angenommen.
+     *
+     * NUR bei der neuen Form: in einer flachen Datei aus 0.9.14 stehen die
+     * Pumpenschluessel oben, und dort sind sie voellig richtig. Sie werden
+     * nach der Wanderung bei ihrer Pumpe geprueft. */
+    $vorg_global = array_intersect_key(pw_vorgaben(),
+                                       array_flip(pw_global_schluessel()));
+    if (isset($daten['pumpen'])) {
+        foreach (array_keys($daten) as $k) {
+            if ($k === 'pumpen' || array_key_exists($k, $vorg_global)) { continue; }
+            $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
+        }
+    }
+
+    /* Eine Sicherung aus der Zeit vor 1.0.0 ist flach. Sie wird GEWANDERT
+     * gelesen, nicht abgewiesen - sonst waere jede vorhandene Sicherung
+     * beim Umstieg wertlos. Geschrieben wird immer die neue Form.
+     *
+     * OHNE Vorgaben aufzufuellen: sonst erfindet die Wanderung ein leeres
+     * formgeheim, und der Schutz weiter unten weist die eigene Erfindung
+     * ab. Genau das ist beim ersten Versuch passiert. */
+    $daten = pw_wandern($daten, false);
+    $vorg_pumpe = pw_vorgaben_pumpe();
+    /* Die Kennung ist die ADRESSE einer Pumpe, kein Wert: sie wird nie
+     * "uebernommen", und solange sie mitgezaehlt wurde, war die Zahl
+     * unerreichbar ("26 von 27" bei einer vollstaendigen eigenen
+     * Sicherung). Und je Pumpe kommt ein voller Satz Werte mit - bei zwei
+     * Pumpen war die Zahl ausserdem zu klein. */
+    $je_pumpe = count($vorg_pumpe) - 1;
+    $wieviele = isset($daten['pumpen']) ? max(1, count($daten['pumpen'])) : 1;
+    $erwartet = count($vorg_global) + $je_pumpe * $wieviele;
+    /* Der laufende Stand ist die Grundlage. */
+    $neu = pw_config();
+
+    /* Die globalen Schluessel. */
     $anzahl = 0;
     $gesehen = array();
     foreach ($daten as $k => $w) {
-        if (!array_key_exists($k, $vorg)) {
+        if ($k === 'pumpen') { continue; }
+        if (!array_key_exists($k, $vorg_global)) {
             $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
             continue;
         }
@@ -1641,6 +2233,45 @@ function pw_sicherung_lesen($roh)
         $anzahl++;
     }
 
+    /* Und jede Pumpe fuer sich. Die Kennung entscheidet, welche Pumpe im
+     * laufenden Stand ersetzt wird; eine unbekannte Kennung kommt hinzu. */
+    $pumpen_neu = array();
+    foreach (isset($daten['pumpen']) ? $daten['pumpen'] : array() as $i => $p) {
+        if (!is_array($p)) { continue; }
+        $id = isset($p['id']) ? (string) $p['id'] : ('pumpe' . ($i + 1));
+        $ziel = array();
+        foreach (isset($neu['pumpen']) ? $neu['pumpen'] : array() as $vorhanden) {
+            if (isset($vorhanden['id']) && (string) $vorhanden['id'] === $id) {
+                $ziel = $vorhanden; break;
+            }
+        }
+        $ziel = array_merge(pw_vorgaben_pumpe(), $ziel, array('id' => $id));
+        foreach ($p as $k => $w) {
+            if ($k === 'id') { continue; }
+            if ($k === 'name') { $ziel['name'] = substr((string) $w, 0, 40); $anzahl++; continue; }
+            if (!array_key_exists($k, $vorg_pumpe)) {
+                $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e($id . '.' . $k));
+                continue;
+            }
+            list($wert, $grund) = pw_wert_pruefen($k, $w);
+            if ($grund !== '') {
+                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e($id . '.' . $k),
+                                    pw_e(is_scalar($w) ? substr((string) $w, 0, 60) : gettype($w)));
+                continue;
+            }
+            $ziel[$k] = $wert;
+            $anzahl++;
+        }
+        $pumpen_neu[] = $ziel;
+    }
+    if ($pumpen_neu) {
+        $neu['pumpen'] = $pumpen_neu;
+        $doppelt = pw_praefixe_pruefen($neu);
+        foreach ($doppelt as $d) {
+            $mangel[] = sprintf(pw_t('EINST.SICH_PRAEFIX'), pw_e($d));
+        }
+    }
+
     /* 4. Eine Datei ohne einen einzigen bekannten Schluessel ist keine. */
     if ($anzahl === 0) {
         $mangel[] = pw_t('EINST.SICH_LEER');
@@ -1648,7 +2279,7 @@ function pw_sicherung_lesen($roh)
 
     /* Was die Datei nicht genannt hat, bleibt stehen - und wird GENANNT. */
     $unveraendert = array();
-    foreach ($vorg as $k => $v) {
+    foreach ($vorg_global as $k => $v) {
         if (!isset($gesehen[$k])) { $unveraendert[] = $k; }
     }
 
@@ -1680,7 +2311,7 @@ function pw_sicherung_lesen($roh)
  */
 function pw_unbekannt_grund($cfg = null, $stand = null, $jetzt = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     $stand = $stand === null ? pw_stand() : $stand;
     $jetzt = $jetzt === null ? time() : $jetzt;
 
@@ -1759,8 +2390,12 @@ function pw_unbekannt_grund($cfg = null, $stand = null, $jetzt = null)
  */
 function pw_selbstpruefung($cfg = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
-    $stand = pw_stand();
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
+    /* Der Zustand DIESER Pumpe. Ohne Kennung waere es der der ersten - und
+     * bei der Sumpfpumpe stuende dann die Anlieferung des Hauswasserwerks:
+     * ein gruener Haken, waehrend die Sumpfpumpe seit Tagen still ist.
+     * Gefunden von pw10_reiter_test.py, nicht beim Lesen. */
+    $stand = pw_stand(isset($cfg['id']) ? (string) $cfg['id'] : null);
     $m = pw_mqtt_gateway_info();
     $p = pw_paths();
     $z = array();
@@ -1797,6 +2432,40 @@ function pw_selbstpruefung($cfg = null)
     $add('PRUEF.UDP', $m['udpport'] > 0 ? 1 : ($m['gefunden'] ? 0 : 2),
          $m['udpport'] > 0 ? (string) $m['udpport'] : '');
     $add('PRUEF.MQTT_EIN', !empty($cfg['mqtt_ein']) ? 1 : 2, pw_mqtt_thema($cfg));
+
+    /* --- Die Pumpen gegeneinander ---
+     *
+     * Diese Zeile gilt fuer ALLE Pumpen, nicht fuer die gewaehlte: zwei
+     * gleiche Themenpraefixe sind kein Mangel EINER Pumpe. Sie steht
+     * trotzdem in jeder Tabelle - wer sie nur unter einer Pumpe zeigte,
+     * versteckte sie vor dem, der zufaellig eine andere ansieht.
+     *
+     * pw_praefixe_pruefen() gab es seit dem Umbau, gefragt hat sie
+     * niemand. Ein Praefix, das ein anderes verschluckt ("pumpe" und
+     * "pumpe/sumpf"), faellt hier auf - in Loxone faellt es nicht auf,
+     * dort steht dann ein Wert, der mal von der einen und mal von der
+     * anderen Pumpe kommt. */
+    $pw_kollision = pw_praefixe_pruefen(pw_config());
+    $add('PRUEF.PRAEFIXE', $pw_kollision ? 0 : 1, implode('; ', $pw_kollision));
+
+    /* Gehoert JEDE eintreffende Zeile einer Pumpe?
+     *
+     * Der Zuhoerer zaehlt die Zeilen, die zu keinem Quell-Thema passen.
+     * Ohne seinen Bericht ist das ein STRICH: er laeuft nicht, oder er hat
+     * noch nichts geschrieben. "Keine Auskunft" ist ausdruecklich nicht
+     * "null fremde" - dieselbe Regel wie bei der Anwesenheit. */
+    $pw_ber = pw_dienst_bericht();
+    if (!$pw_ber) {
+        $add('PRUEF.ZUORDNUNG', 2, '');
+    } else {
+        $pw_fremd_n = (int) pw_zahl(isset($pw_ber['fremd']) ? $pw_ber['fremd'] : 0, 0.0);
+        $add('PRUEF.ZUORDNUNG', $pw_fremd_n > 0 ? 0 : 1,
+             $pw_fremd_n > 0
+             ? sprintf(pw_t('PRUEF.Z_FREMD'), $pw_fremd_n)
+             : ((int) pw_zahl(isset($pw_ber['gesehen']) ? $pw_ber['gesehen'] : 0, 0.0)
+                + (int) pw_zahl(isset($pw_ber['uebergangen']) ? $pw_ber['uebergangen'] : 0, 0.0))
+               . ' ' . pw_t('PRUEF.Z_ZEILEN'));
+    }
 
     /* --- Die Messwertquelle ---
      *
@@ -1941,9 +2610,13 @@ function pw_selbstpruefung($cfg = null)
  */
 function pw_endpunkt_probe($cfg = null, $puffer_s = 300)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     $p = pw_paths();
-    $datei = $p['datadir'] . '/endpunkt.json';
+    /* Je Pumpe ein Zwischenspeicher: die Probe prueft die Adresse DIESER
+     * Pumpe, und eine gemeinsame Datei liesse die zuletzt geprueften fuenf
+     * Minuten lang fuer alle gelten. */
+    $pid = isset($cfg['id']) ? preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $cfg['id'])) : '';
+    $datei = $p['datadir'] . '/endpunkt' . ($pid === '' ? '' : '_' . $pid) . '.json';
     $alt = pw_json_lesen($datei);
     /* Alle drei Schluessel, nicht nur der Zeitstempel: ein halb
      * geschriebener Zwischenspeicher ergab sonst ok = 0, also ein rotes
@@ -1985,6 +2658,8 @@ function pw_endpunkt_probe($cfg = null, $puffer_s = 300)
     @fclose($fp);
     $adr = 'http://127.0.0.1:' . $port . '/plugins/' . $p['plugin']
          . '/index.php?token=' . rawurlencode((string) $cfg['aktionstoken'])
+         . (isset($cfg['id']) && trim((string) $cfg['id']) !== ''
+            ? '&pumpe=' . rawurlencode((string) $cfg['id']) : '')
          . '&aktion=selftest';
     $ktx = stream_context_create(array('http' => array(
         'timeout' => 3, 'ignore_errors' => true, 'method' => 'GET')));
@@ -2064,6 +2739,45 @@ function pw_beschriftung_stimmig($cfg = null, $hoechstens = 60)
 }
 
 /** Alle Vorlagen ueber EINEN Namen - so kann die Selbstpruefung sie zaehlen. */
+/**
+ * Die Pumpen, aus denen eine Vorlage gebaut wird - als FLACHE Sichten.
+ *
+ * Drei Faelle, und der mittlere ist der, der jede alte Aufrufstelle am
+ * Leben haelt:
+ *
+ *   null            -> alle Pumpen der Konfiguration
+ *   volle Form      -> alle Pumpen darin
+ *   flache Sicht    -> genau diese eine
+ *
+ * Der dritte Fall ist nicht Nachsicht, sondern Absicht:
+ * pw_beschriftung_stimmig() misst die drei Vorlagen fuer EINE bestimmte
+ * Pumpe, und der Reiter Test tut dasselbe.
+ */
+function pw_vorlage_pumpen($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(); }
+    if (isset($cfg['pumpen']) && is_array($cfg['pumpen'])) {
+        $aus = array();
+        foreach (pw_pumpe_ids($cfg) as $id) { $aus[] = pw_pumpe($cfg, $id); }
+        return $aus ? $aus : array(pw_pumpe($cfg));
+    }
+    return array($cfg);
+}
+
+/**
+ * Der Anzeigename einer Pumpe - Name, sonst Kennung.
+ *
+ * Eine namenlose Pumpe darf nicht als leerer Zusatz erscheinen: "Messwert
+ * liefern (Watt) - " waere in Config nicht von "Messwert liefern (Watt) - "
+ * einer anderen namenlosen zu unterscheiden.
+ */
+function pw_pumpe_name($p)
+{
+    $n = isset($p['name']) ? trim((string) $p['name']) : '';
+    if ($n !== '') { return $n; }
+    return isset($p['id']) ? (string) $p['id'] : 'Pumpe';
+}
+
 function pw_vorlage($art, $cfg = null, $host = null, $texte = null)
 {
     if ($art === 'vo')     { return pw_vorlage_vo($cfg, $host); }
@@ -2139,7 +2853,7 @@ function pw_reiter_stimmig()
 /** Stimmen Feldliste, erzeugte Vorlage und Namenstabelle ueberein? */
 function pw_felder_stimmig($cfg = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     $liste = array_keys(array_merge(pw_felderliste(), pw_statusliste()));
     $felder = array_keys(pw_felder(pw_stand(), $cfg));
     // pw_felder liefert die Nutzfelder; die Statusthemen kommen erst beim
@@ -2176,7 +2890,7 @@ function pw_befunde_stimmig()
  */
 function pw_suchtext_stimmig($cfg = null)
 {
-    $cfg = $cfg === null ? pw_config() : $cfg;
+    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     $felder = pw_felder(pw_stand(), $cfg);
     $felder['status_ok'] = 1;
     $felder['status_ts'] = 1234567890;
@@ -2454,8 +3168,77 @@ function pw_mqtt_anwesenheit($thema, $nutzlast)
  *                 NORMALFALL, kein Fehler: von zwei gemessenen
  *                 Shelly-Meldungen je Minute traegt nur eine apower.
  */
+/**
+ * Passt ein Thema auf einen MQTT-Filter?
+ *
+ * Nach den Regeln des Protokolls, nicht nach Zeichenketten:
+ *   +   deckt genau EINEN Abschnitt
+ *   #   deckt den Rest und darf nur am Ende stehen
+ *
+ * Der Unterschied ist in diesem Haus nicht theoretisch: es gibt
+ * `shelly1pmg4/#` und `shelly1pmg4-Pumpensumpf/#` nebeneinander. Ein
+ * strpos() schluege die Zeilen der zweiten der ersten zu.
+ */
+function pw_thema_passt($filter, $thema)
+{
+    $f = explode('/', trim((string) $filter));
+    $s = explode('/', trim((string) $thema));
+    $nf = count($f);
+    for ($i = 0; $i < $nf; $i++) {
+        if ($f[$i] === '#') { return $i === $nf - 1; }
+        if (!isset($s[$i])) { return false; }
+        if ($f[$i] === '+') { continue; }
+        if ($f[$i] !== $s[$i]) { return false; }
+    }
+    return count($s) === $nf;
+}
+
+/**
+ * Welcher Pumpe gehoert diese Zeile?
+ *
+ * Bei mehreren passenden Filtern gewinnt der SPEZIFISCHERE - gemessen an der
+ * Zahl der Abschnitte ohne Platzhalter. Sonst haenge es von der Reihenfolge
+ * in der Konfiguration ab, welche Pumpe eine Zeile bekommt, und das waere
+ * eine stille Falle.
+ *
+ * Rueckgabe: die Kennung, oder null.
+ */
+function pw_pumpe_fuer_thema($cfg, $thema)
+{
+    $beste = null; $punkte = -1;
+    foreach (isset($cfg['pumpen']) ? $cfg['pumpen'] : array() as $p) {
+        if (!isset($p['quelle']) || $p['quelle'] !== 'mqtt') { continue; }
+        $f = isset($p['quelle_topic']) ? trim((string) $p['quelle_topic']) : '';
+        if ($f === '' || !pw_thema_passt($f, $thema)) { continue; }
+        $wert = 0;
+        foreach (explode('/', $f) as $a) {
+            if ($a !== '#' && $a !== '+') { $wert++; }
+        }
+        if ($wert > $punkte) { $punkte = $wert; $beste = (string) $p['id']; }
+    }
+    return $beste;
+}
+
+/**
+ * Das Anwesenheitsthema zu einem Quell-Filter.
+ *
+ * `shelly1pmg4-Pumpensumpf/#` -> `shelly1pmg4-Pumpensumpf/online`. Der
+ * Platzhalter am Ende faellt weg; ohne Platzhalter wird angehaengt.
+ */
+function pw_online_thema($filter)
+{
+    $f = trim((string) $filter);
+    if ($f === '') { return ''; }
+    $a = explode('/', $f);
+    $letzt = end($a);
+    if ($letzt === '#' || $letzt === '+') { array_pop($a); }
+    if (!$a) { return ''; }
+    return implode('/', $a) . '/online';
+}
+
 function pw_zeile_verarbeiten($zeile, $cfg, $jetzt = null, $schreiben = true)
 {
+    $cfg = pw_flach($cfg, 'pw_zeile_verarbeiten');
     $jetzt = $jetzt === null ? time() : $jetzt;
     $z = rtrim((string) $zeile, "\r\n");
     $leer = array('art' => 'nichts', 'watt' => null, 'neben' => array(),
@@ -2519,6 +3302,22 @@ function pw_signal($pid, $nr)
         return true;
     }
     return false;
+}
+
+/**
+ * Der Bericht des Zuhoerers.
+ *
+ * Er zaehlt seit seinem Start: Zeilen mit Messwert, Zeilen ohne, und Zeilen,
+ * die zu KEINER Pumpe gehoeren. Die dritte Zahl ist die interessante - eine
+ * Zeile ohne Pumpe ist ein Einrichtungsfehler, meistens ein von Hand
+ * erweitertes Abo, und der Zuhoerer verwirft sie.
+ *
+ * Ohne Datei: ein leeres Feld. "Keine Auskunft" ist nicht "null fremde".
+ */
+function pw_dienst_bericht()
+{
+    $d = pw_json_lesen(pw_paths()['datadir'] . '/dienst.json');
+    return is_array($d) && isset($d['ts']) ? $d : array();
 }
 
 /** Laeuft der Zuhoerer? Gemessen an der PID-Datei UND am Prozess. */

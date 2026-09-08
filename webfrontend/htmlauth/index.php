@@ -88,7 +88,35 @@ $pw_fehler = array();
 /* Vervollstaendigen statt nur ergaenzen: array_merge beim Lesen macht
  * "fehlt" von "steht auf dem Vorgabewert" ununterscheidbar, und eine
  * Umbenennung waere still. Der Reiter Test zeigt danach "19 von 19". */
-list($pw_cfg, $pw_fehlten, $pw_fremd) = pw_cfg_vervollstaendigen();
+list($pw_voll, $pw_fehlten, $pw_fremd) = pw_cfg_vervollstaendigen();
+
+/* ==================================================================
+ * WELCHE PUMPE?
+ * ==================================================================
+ *
+ * Die Kennung kommt aus der Adresse (Verweis) oder aus dem Formular
+ * (verstecktes Feld) und wird GEPRUEFT. Eine unbekannte faellt auf die erste
+ * zurueck: ohne diese Pruefung liesse sich ueber ?pumpe=erfunden ein
+ * Unterbaum anlegen, den die Oberflaeche nie wieder zeigt.
+ *
+ * $_POST hat Vorrang vor $_GET - ein abgeschicktes Formular sagt genauer,
+ * worauf es sich bezieht, als die Adresse, in der es steht. Auf $_REQUEST
+ * verlassen wir uns nicht: welche Quelle dort gewinnt, haengt an
+ * request_order in der php.ini, und das ist keine Groesse dieses Plugins.
+ *
+ * Diese Zeilen stehen VOR den Handlern. Ein Handler, der die Kennung erst
+ * spaeter bekaeme, haette bis dahin auf die erste Pumpe geschrieben. */
+$pw_alle_ids = pw_pumpe_ids($pw_voll);
+$pw_pid = '';
+if (isset($_POST['pumpe'])) {
+    $pw_pid = (string) $_POST['pumpe'];
+} elseif (isset($_GET['pumpe'])) {
+    $pw_pid = (string) $_GET['pumpe'];
+}
+if (!in_array($pw_pid, $pw_alle_ids, true)) {
+    $pw_pid = $pw_alle_ids ? $pw_alle_ids[0] : '';
+}
+$pw_cfg = pw_pumpe($pw_voll, $pw_pid);
 
 /* Wortzeichen beim ersten Oeffnen erzeugen, danach nur noch auf
  * ausdruecklichen Wunsch - es steckt in den Adressen im Miniserver. */
@@ -106,8 +134,12 @@ if (empty($pw_cfg['aktionstoken']) || empty($pw_cfg['formgeheim'])) {
     if (empty($pw_cfg['formgeheim'])) {
         $pw_cfg['formgeheim'] = pw_token_erzeugen();
     }
-    pw_config_speichern($pw_cfg);
-    $pw_cfg = pw_config();
+    /* Beide Geheimnisse sind GLOBAL. Geschrieben wird deshalb die volle
+     * Form - wer hier die flache Sicht speicherte, machte aus der
+     * Konfiguration wieder eine flache Datei und verloere beim naechsten
+     * Lesen jede Pumpe ausser der ersten. */
+    pw_config_speichern(pw_pumpe_zurueck(pw_config(), $pw_cfg, $pw_pid));
+    $pw_cfg = pw_pumpe(pw_config(), $pw_pid);
 }
 
 /* ==================================================================
@@ -167,7 +199,11 @@ $pw_testausgabe = '';
 if ($pw_ist_post && isset($_POST['vorlage'])) {
     $pw_art = in_array((string) $_POST['vorlage'], array('vi', 'vihttp', 'vo'), true)
               ? (string) $_POST['vorlage'] : 'vi';
-    list($pw_vname, $pw_vinhalt) = pw_vorlage($pw_art, $pw_cfg, null, 'pw_t');
+    /* vi und vo tragen ALLE Pumpen - sie bekommen deshalb die volle Form.
+     * vihttp kann es nicht (eine Abfrageadresse je Datei) und bekommt die
+     * flache Sicht der gewaehlten Pumpe. */
+    list($pw_vname, $pw_vinhalt) = pw_vorlage(
+        $pw_art, $pw_art === 'vihttp' ? $pw_cfg : pw_config(), null, 'pw_t');
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $pw_vname . '"');
     echo $pw_vinhalt;
@@ -184,7 +220,10 @@ if ($pw_ist_post && isset($_POST['vorlage'])) {
  * Seit 0.9.8 traegt sie einen Kopf (_plugin, _fassung, _stand), und die
  * Lesefunktion VERLANGT ihn. */
 if ($pw_ist_post && isset($_POST['pw_sichern'])) {
-    $pw_js = json_encode(pw_sicherung_bauen($pw_cfg),
+    /* AUSDRUECKLICH die volle Form, nicht die flache Sicht der gewaehlten
+     * Pumpe: eine Sicherung, die nur die gerade angesehene Pumpe enthaelt,
+     * loescht beim Zurueckspielen alle anderen. */
+    $pw_js = json_encode(pw_sicherung_bauen(pw_config()),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($pw_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -216,6 +255,12 @@ if ($pw_ist_post && isset($_POST['pw_zurueck'])) {
              * nichts. */
             $pw_fehler[] = pw_t('EINST.SICH_ABGELEHNT') . ' '
                             . implode(' ', $pw_mangel);
+        /* HIER die volle Form OHNE pw_pumpe_zurueck(): $pw_neu kommt aus
+         * pw_sicherung_lesen() und ist bereits die ganze Konfiguration samt
+         * Pumpenliste. Wer sie durch pw_pumpe_zurueck() schickt, liest sie
+         * als flache Sicht - und 'pumpen' faellt heraus, weil es dort weder
+         * global noch ein Pumpenschluessel ist. Die Sicherung galt dann als
+         * angenommen und wurde nicht uebernommen. */
         } elseif (pw_config_speichern($pw_neu)) {
             /* Beide Zahlen nennen, und die uebrigen beim Namen. "1 Werte
              * uebernommen" war bis 0.9.7 woertlich richtig und trotzdem
@@ -235,13 +280,48 @@ if ($pw_ist_post && isset($_POST['pw_zurueck'])) {
     $pw_tab = 'tab-settings';
 }
 
+/* ---------- Pumpe anlegen ---------- */
+if ($pw_ist_post && isset($_POST['pumpe_neu'])) {
+    $pw_neue = pw_pumpe_anlegen();
+    if ($pw_neue === null) {
+        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
+    } else {
+        /* Auf die neue Pumpe umschalten. Wer eine anlegt, will sie
+         * einrichten - und saehe sonst weiter die alte, waehrend die neue
+         * unbemerkt in der Leiste steht. */
+        $pw_pid = $pw_neue;
+        $pw_meldungen[] = sprintf(pw_t('PUMPE.ANGELEGT'), pw_e($pw_neue));
+    }
+    $pw_tab = 'tab-settings';
+}
+
+/* ---------- Pumpe entfernen ---------- */
+if ($pw_ist_post && isset($_POST['pumpe_weg'])) {
+    $pw_erg = pw_pumpe_entfernen($pw_pid);
+    if ($pw_erg === true) {
+        $pw_meldungen[] = sprintf(pw_t('PUMPE.ENTFERNT'), pw_e($pw_pid));
+        /* Die Wahl zeigt jetzt ins Leere. Sie wird bewusst NICHT hier
+         * berichtigt, sondern im Anzeigeblock - dort steht die Pruefung
+         * ohnehin, und zwei Stellen mit derselben Regel gehen auseinander. */
+    } elseif ($pw_erg === 'letzte') {
+        $pw_fehler[] = pw_t('PUMPE.LETZTE');
+    } else {
+        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
+    }
+    $pw_tab = 'tab-settings';
+}
+
 /* ---------- Einstellungen speichern ---------- */
 if ($pw_ist_post && isset($_POST['speichern'])) {
-    $pw_neu = pw_config();
+    /* Die volle Form MERKEN und flach weiterarbeiten - der Handler
+     * unten liest und schreibt Schluessel ohne Pumpenliste, so wie
+     * immer. pw_pumpe_zurueck() legt sie am Ende wieder auseinander. */
+    $pw_voll = pw_config();
+    $pw_neu = pw_pumpe($pw_voll, $pw_pid);
     $pw_beanstandet = array();
     /* Dieselbe Positivliste wie die Sicherung - eine zweite Wahrheit ueber
      * zulaessige Werte gibt es nicht (pw_grenzen). */
-    foreach (array('modell', 'quelle', 'quelle_topic',
+    foreach (array('name', 'modell', 'art', 'ruht_s', 'quelle', 'quelle_topic',
                    'an_w', 'trocken_w', 'trocken_s', 'ueberlast_w',
                    'dauerlauf_s', 'starts_h', 'anlauf_s', 'stale_s') as $pw_f) {
         /* Ein Feld, das das Formular GAR NICHT mitschickt, behaelt seinen
@@ -280,12 +360,12 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
     }
     foreach (array('sperren_ein', 'sperre_trockenlauf', 'sperre_dauerlauf',
                    'sperre_schaltspiel', 'sperre_ueberlast', 'sperre_kein_anlauf',
-                   'quittung_noetig') as $pw_h) {
+                   'sperre_ruht', 'quittung_noetig') as $pw_h) {
         $pw_neu[$pw_h] = isset($_POST[$pw_h]) ? 1 : 0;
     }
     if ($pw_beanstandet) {
         $pw_fehler = array_merge($pw_fehler, $pw_beanstandet);
-    } elseif (pw_config_speichern($pw_neu)) {
+    } elseif (pw_config_speichern(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid))) {
         $pw_meldungen[] = pw_t('ALLG.GESPEICHERT');
     } else {
         $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
@@ -295,7 +375,11 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
 
 /* ---------- MQTT speichern (eigener Reiter, eigenes Formular) ---------- */
 if ($pw_ist_post && isset($_POST['mqtt_save'])) {
-    $pw_neu = pw_config();
+    /* Die volle Form MERKEN und flach weiterarbeiten - der Handler
+     * unten liest und schreibt Schluessel ohne Pumpenliste, so wie
+     * immer. pw_pumpe_zurueck() legt sie am Ende wieder auseinander. */
+    $pw_voll = pw_config();
+    $pw_neu = pw_pumpe($pw_voll, $pw_pid);
     $pw_neu['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     /* Geprueft wird ueber DIESELBE Positivliste wie im Einstellungs-
      * Handler und in der Sicherung - eine zweite Wahrheit ueber zulaessige
@@ -324,7 +408,7 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
     } else {
         $pw_neu['mqtt_topic'] = pw_mqtt_thema_saeubern($pw_thema_wert);
     }
-    if (pw_config_speichern($pw_neu)) { $pw_meldungen[] = pw_t('ALLG.GESPEICHERT'); }
+    if (pw_config_speichern(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid))) { $pw_meldungen[] = pw_t('ALLG.GESPEICHERT'); }
     else { $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config'])); }
     $pw_tab = 'tab-mqtt';
 }
@@ -336,9 +420,13 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
  * muss sie entwerten koennen. Bis 0.9.7 ging das nur, indem man die
  * Konfigurationsdatei von Hand aenderte. */
 if ($pw_ist_post && isset($_POST['pw_token_neu'])) {
-    $pw_neu = pw_config();
+    /* Die volle Form MERKEN und flach weiterarbeiten - der Handler
+     * unten liest und schreibt Schluessel ohne Pumpenliste, so wie
+     * immer. pw_pumpe_zurueck() legt sie am Ende wieder auseinander. */
+    $pw_voll = pw_config();
+    $pw_neu = pw_pumpe($pw_voll, $pw_pid);
     $pw_neu['aktionstoken'] = pw_token_erzeugen();
-    if (pw_config_speichern($pw_neu)) {
+    if (pw_config_speichern(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid))) {
         pw_log('Neues Aktionstoken erzeugt - die bisherigen Adressen in Loxone wirken nicht mehr.');
         $pw_meldungen[] = pw_t('EINST.TOKEN_NEU_ERZEUGT');
     } else {
@@ -409,9 +497,18 @@ if ($pw_ist_post && isset($_POST['log_leeren'])) {
 /* ==================================================================
  * ERST JETZT die Anzeigewerte bilden - nach ALLEN Handlern
  * ================================================================== */
-$pw_cfg = pw_config();
+/* Neu lesen: die Handler haben womoeglich geschrieben, und die Liste der
+ * Pumpen kann sich dabei geaendert haben (hinzugefuegt, entfernt). Deshalb
+ * wird auch die Wahl noch einmal geprueft - eine soeben entfernte Pumpe darf
+ * die Anzeige nicht auf einen Unterbaum richten, den es nicht mehr gibt. */
+$pw_voll = pw_config();
+$pw_alle_ids = pw_pumpe_ids($pw_voll);
+if (!in_array($pw_pid, $pw_alle_ids, true)) {
+    $pw_pid = $pw_alle_ids ? $pw_alle_ids[0] : '';
+}
+$pw_cfg = pw_pumpe($pw_voll, $pw_pid);
 $pw_fmt = pw_formtoken($pw_cfg);
-$pw_stand = pw_stand();
+$pw_stand = pw_stand($pw_pid);
 $pw_felder = pw_felder($pw_stand, $pw_cfg);
 $pw_m = pw_mqtt_gateway_info();
 $pw_p = pw_paths();
@@ -421,9 +518,18 @@ $pw_modelle = pw_modelle();
 $pw_befunde = pw_befund_schluessel();
 $pw_takt = pw_takt($pw_stand);
 $pw_wart = pw_wartung($pw_stand);
-$pw_tage = pw_tage(14);
+$pw_tage = pw_tage(14, $pw_pid);
 $pw_abolage = pw_abo_lage();
 $pw_frame = class_exists('LBWeb', false);
+
+/* Der Zusatz, den JEDER Verweis und JEDES Formular traegt.
+ *
+ * $pw_q gehoert in ein Attribut - deshalb steht dort &amp;, nicht &.
+ * $pw_qf ist die versteckte Zeile; sie wird FERTIG gebaut, damit an den
+ * vierzehn Fundstellen nichts zu vergessen ist. */
+$pw_q = '&amp;pumpe=' . rawurlencode($pw_pid);
+$pw_qf = '<input data-role="none" type="hidden" name="pumpe" value="'
+       . pw_e($pw_pid) . '">';
 
 if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL') . ' ' . pw_fassung(), 'https://wiki.loxberry.de/', 'help.html'); }
 
@@ -434,6 +540,19 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL') . ' ' . pw_fassung(), 'https
 .sm-wrap, .sm-wrap *, .sm-tabs, .sm-tabs * { text-shadow: none !important; }
 .sm-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
 .sm-wrap h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
+.sm-pumpen { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+              margin: 10px 0 0; padding: 8px 10px; background: #f2f6ec;
+              border: 1px solid #d8e4c8; border-radius: 8px; }
+.sm-kennung { color: #777; font-size: 0.85em; }
+.sm-ueberblick td a { text-decoration: none; font-weight: 600; }
+.sm-pumpen-titel { font-weight: 600; font-size: 0.9em; color: #4f7d17; margin-right: 4px; }
+.sm-pumpen-form { display: inline; margin: 0; }
+.sm-pumpe { background: #fff; border: 1px solid #c6d5b0; border-radius: 6px;
+            padding: 5px 12px; font-size: 0.92em; color: #444 !important;
+            text-decoration: none; display: inline-block; }
+.sm-pumpe.sm-active { background: #6dac20; color: #fff !important;
+                      border-color: #6dac20; font-weight: 600; }
+.sm-pumpe-knopf { padding: 5px 10px !important; font-size: 0.85em !important; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
 .sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0;
           padding: 9px 18px; font-size: 0.95em; color: #444 !important; text-decoration: none; display: inline-block; }
@@ -580,13 +699,39 @@ if ($pw_felder['laeuft'] === -1) {
 }
 ?>
 
+<?php /* DIE PUMPENWAHL steht UEBER den Reitern: sie gilt fuer alle sechs.
+   Ein Umschalten ist ein VERWEIS, kein Formular - es aendert nichts, es
+   sieht nur woanders hin; deshalb braucht es kein Merkmal und darf im
+   Verlauf des Browsers stehen. */ ?>
+<div class="sm-pumpen">
+  <span class="sm-pumpen-titel"><?= pw_e(pw_t('PUMPE.WAHL')) ?></span>
+<?php foreach ($pw_alle_ids as $pw_i): $pw_pp = pw_pumpe($pw_voll, $pw_i);
+      /* Eine namenlose Pumpe zeigt ihre Kennung. Ein leerer Knopf waere
+         nicht anklickbar und die Pumpe damit unerreichbar. */
+      $pw_nm = trim((string) $pw_pp['name']) !== '' ? $pw_pp['name'] : $pw_i; ?>
+  <a data-role="none" class="sm-pumpe<?= $pw_i === $pw_pid ? ' sm-active' : '' ?>" href="index.php?form=<?= pw_e(substr($pw_tab, 4)) ?>&amp;pumpe=<?= rawurlencode($pw_i) ?>"><?= pw_e($pw_nm) ?></a>
+<?php endforeach; ?>
+  <form action="index.php" method="post" class="sm-pumpen-form">
+    <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-aktion sm-pumpe-knopf" type="submit" name="pumpe_neu" value="1"><?= pw_e(pw_t('PUMPE.K_NEU')) ?></button>
+  </form>
+<?php if (count($pw_alle_ids) > 1): ?>
+  <form action="index.php" method="post" class="sm-pumpen-form">
+    <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-aktion sm-pumpe-knopf" type="submit" name="pumpe_weg" value="1"><?= pw_e(pw_t('PUMPE.K_WEG')) ?></button>
+  </form>
+<?php endif; ?>
+</div>
+
 <div class="sm-tabs">
-	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= pw_e(pw_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt" href="index.php?form=mqtt">MQTT</a>
-	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone" href="index.php?form=loxone"><?= pw_e(pw_t('REITER.LOXONE')) ?></a>
-	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-bilanz' ? ' sm-active' : '' ?>" data-ziel="tab-bilanz" href="index.php?form=bilanz"><?= pw_e(pw_t('REITER.BILANZ')) ?></a>
-	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test" href="index.php?form=test"><?= pw_e(pw_t('REITER.TEST')) ?></a>
-	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log" href="index.php?form=log"><?= pw_e(pw_t('REITER.LOG')) ?></a>
+	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings<?= $pw_q ?>"><?= pw_e(pw_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt" href="index.php?form=mqtt<?= $pw_q ?>">MQTT</a>
+	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone" href="index.php?form=loxone<?= $pw_q ?>"><?= pw_e(pw_t('REITER.LOXONE')) ?></a>
+	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-bilanz' ? ' sm-active' : '' ?>" data-ziel="tab-bilanz" href="index.php?form=bilanz<?= $pw_q ?>"><?= pw_e(pw_t('REITER.BILANZ')) ?></a>
+	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test" href="index.php?form=test<?= $pw_q ?>"><?= pw_e(pw_t('REITER.TEST')) ?></a>
+	<a data-role="none" class="sm-tab<?= $pw_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log" href="index.php?form=log<?= $pw_q ?>"><?= pw_e(pw_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -597,9 +742,31 @@ if ($pw_felder['laeuft'] === -1) {
 </div>
 
 <form action="index.php" method="post">
-<input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+<input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
 <input data-role="none" type="hidden" name="speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+
+<h2><?= pw_e(pw_t('PUMPE.H_PUMPE')) ?></h2>
+<div class="sm-feld">
+  <label><?= pw_e(pw_t('PUMPE.L_NAME')) ?></label>
+  <input data-role="none" type="text" name="name" value="<?= pw_e($pw_cfg['name']) ?>" placeholder="<?= pw_e($pw_cfg['id']) ?>">
+  <div class="sm-hilfe"><?= pw_t('PUMPE.H_NAME') ?></div>
+</div>
+<div class="sm-feld">
+  <label><?= pw_e(pw_t('PUMPE.L_ART')) ?></label>
+  <select data-role="none" class="sm-auswahl" name="art">
+<?php foreach (pw_arten() as $pw_ak => $pw_av): ?>
+    <option value="<?= pw_e($pw_ak) ?>"<?= pw_art($pw_cfg) === $pw_ak ? ' selected' : '' ?>><?= pw_e(pw_t($pw_av['name'])) ?></option>
+<?php endforeach; ?>
+  </select>
+  <div class="sm-hilfe"><?= pw_t('PUMPE.H_ART') ?></div>
+</div>
+<div class="sm-feld">
+  <label><?= pw_e(pw_t('PUMPE.L_RUHT_S')) ?></label>
+  <input data-role="none" type="text" name="ruht_s" value="<?= pw_e($pw_cfg['ruht_s']) ?>">
+  <div class="sm-hilfe"><?= pw_t('PUMPE.H_RUHT_S') ?></div>
+</div>
+<div class="sm-feld sm-mono sm-kennung"><?= pw_e(pw_t('PUMPE.L_ID')) ?>: <?= pw_e($pw_cfg['id']) ?></div>
 
 <h2><?= pw_e(pw_t('EINST.H_MODELL')) ?></h2>
 <div class="sm-feld">
@@ -670,6 +837,11 @@ $pw_sperrfelder = array(
     array('sperre_schaltspiel', 'EINST.L_SPERRE_SCHALTSPIEL'),
     array('sperre_ueberlast',   'EINST.L_SPERRE_UEBERLAST'),
     array('sperre_kein_anlauf', 'EINST.L_SPERRE_KEIN_ANLAUF'),
+    /* Sie wirkt nur bei einer Pumpe, die ueberhaupt eine Ruhefrist hat -
+     * und gesperrt wird ohnehin nur bei einem Hauswasserwerk. Der Haken
+     * steht trotzdem immer da: ein Feld, das je nach Nachbarfeld
+     * verschwindet, laesst den Anwender raten, ob er es vergessen hat. */
+    array('sperre_ruht',        'EINST.L_SPERRE_RUHT'),
 );
 foreach ($pw_sperrfelder as $pw_sf): ?>
 <div class="sm-feld">
@@ -701,12 +873,12 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+    <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="pw_sichern" value="1"><?= pw_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
-    <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+    <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="pw_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="pw_zurueck" value="1"><?= pw_t('EINST.K_ZURUECK') ?></button>
@@ -719,7 +891,7 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 <div class="sm-warnung"><?= pw_t('EINST.TOKEN_WARNUNG') ?></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post" style="margin:0;">
-    <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+    <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="pw_token_neu" value="1"><?= pw_t('EINST.K_TOKEN_NEU') ?></button>
   </form>
@@ -733,7 +905,7 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 <?php if ($pw_m['gefunden'] && !$pw_m['autostart']) { ?><div class="sm-warnung"><b>MQTT:</b> <?= pw_t('MQTT.W_AUTOSTART') ?></div><?php } ?>
 <?php if (!$pw_m['gefunden']) { ?><div class="sm-warnung"><b>MQTT:</b> <?= pw_t('MQTT.W_UNBEKANNT') ?></div><?php } ?>
 <form action="index.php" method="post">
-<input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+<input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
 <input data-role="none" type="hidden" name="mqtt_save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
@@ -794,6 +966,10 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 <div class="sm-seite<?= $pw_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <div class="sm-legende"><span><i class="sm-punkt sm-b-technik"></i> <?= pw_t('LEGENDE.TECHNIK') ?></span></div>
 <h2><?= pw_e(pw_t('LOX.H')) ?></h2>
+<?php if (count($pw_alle_ids) > 1): ?>
+<div class="sm-warnung"><?= sprintf(pw_t('LOX.NUR_DIESE'),
+    '<b>' . pw_e(pw_pumpe_name($pw_cfg)) . '</b>') ?></div>
+<?php endif; ?>
 
 <div class="sm-step"><b><?= pw_t('LOX.S0_TITEL') ?></b><br><br>
 <?= pw_t('LOX.S0_TEXT') ?>
@@ -834,9 +1010,12 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 <h2><?= pw_t('LOX.H_VORLAGE') ?></h2>
 <div class="sm-hinweis"><?= pw_t('LOX.H_VORLAGE_TEXT') ?></div>
 <div class="sm-warnung"><?= pw_t('LOX.H_VORLAGE_ADRESSE') ?></div>
+<?php if (count($pw_alle_ids) > 1): ?>
+<div class="sm-hinweis"><?= pw_t('LOX.VORLAGEN_MEHRERE') ?></div>
+<?php endif; ?>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="vorlage" value="vi">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VI') ?></button>
@@ -845,13 +1024,13 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 <div class="sm-hilfe"><?= pw_t('LOX.K_VORLAGE_VI_TEXT') ?></div>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="vorlage" value="vo">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VO') ?></button>
 </form>
 <form action="index.php" method="post" style="margin:0;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="vorlage" value="vihttp">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VIHTTP') ?></button>
@@ -929,7 +1108,7 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 </table>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-bilanz">
   <!-- Das versteckte "wartung_reset" ist kein Schmuck: wirkungstest.py drueckt
        JEDEN Knopf und meldet jede Aenderung an stand.json als Verlust. Ein
@@ -948,8 +1127,13 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 <?php if ($pw_cfg['quelle'] === 'mqtt') { ?>
 <tr><td><?= pw_t('BILANZ.Q_ONLINE') ?></td><td class="<?= $pw_felder['quelle_online'] === 1 ? 'sm-an' : ($pw_felder['quelle_online'] === 0 ? 'sm-aus' : 'sm-strich') ?>"><?=
     $pw_felder['quelle_online'] === 1 ? pw_e(pw_t('WORT.JA')) : ($pw_felder['quelle_online'] === 0 ? pw_e(pw_t('WORT.NEIN')) : '&ndash;') ?></td></tr>
-<tr><td><?= pw_t('BILANZ.Q_ZUHOERER') ?></td><td><?php $pw_pid = pw_dienst_pid(); $pw_da = pw_dienst_alter();
-    echo $pw_pid > 0 ? ('PID ' . (int) $pw_pid . ($pw_da >= 0 ? ', ' . (int) $pw_da . ' s' : '')) : '&ndash;'; ?></td></tr>
+<?php /* $pw_dpid, NICHT $pw_pid: das ist seit 1.0.0 die Kennung der
+   gewaehlten Pumpe. Wer sie hier fuer die Prozessnummer wiederverwendet,
+   kippt sie fuer alles, was danach kommt - und das Schaltwerk am Ende der
+   Datei schrieb dann "&pumpe=0" in die Adresszeile. Dieselbe Klasse wie
+   $p = pw_paths(). */ ?>
+<tr><td><?= pw_t('BILANZ.Q_ZUHOERER') ?></td><td><?php $pw_dpid = pw_dienst_pid(); $pw_da = pw_dienst_alter();
+    echo $pw_dpid > 0 ? ('PID ' . (int) $pw_dpid . ($pw_da >= 0 ? ', ' . (int) $pw_da . ' s' : '')) : '&ndash;'; ?></td></tr>
 <?php } ?>
 <tr><td><?= pw_t('LOX.B_VOLT') ?></td><td><?= $pw_felder['volt'] >= 0 ? pw_e($pw_felder['volt']) . ' V' : '&mdash;' ?></td></tr>
 <tr><td><?= pw_t('LOX.B_AMPERE') ?></td><td><?= $pw_felder['ampere'] >= 0 ? pw_e($pw_felder['ampere']) . ' A' : '&mdash;' ?></td></tr>
@@ -975,6 +1159,42 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 <span><i class="sm-punkt sm-b-technik"></i> <?= pw_t('LEGENDE.TECHNIK') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= pw_t('LEGENDE.AKTION') ?></span>
 </div>
+
+<?php if (count($pw_alle_ids) > 1): ?>
+<h2><?= pw_e(pw_t('TEST.H_ALLE')) ?></h2>
+<div class="sm-hilfe"><?= pw_t('TEST.H_ALLE_TEXT') ?></div>
+<div class="sm-breit">
+<table class="sm-tbl sm-ueberblick">
+<tr><th style="width:6%"></th><th><?= pw_t('TEST.SP_PUMPE') ?></th>
+    <th style="width:18%"><?= pw_t('PUMPE.L_ART') ?></th>
+    <th style="width:16%"><?= pw_t('EINST.L_QUELLE') ?></th>
+    <th style="width:18%"><?= pw_t('TEST.SP_THEMA') ?></th>
+    <th style="width:22%"><?= pw_t('TEST.SP_LAGE') ?></th></tr>
+<?php foreach ($pw_alle_ids as $pw_ui):
+    $pw_up = pw_pumpe($pw_voll, $pw_ui);
+    $pw_us = pw_stand($pw_ui);
+    $pw_uf = pw_felder($pw_us, $pw_up);
+    /* Der Punkt sagt dasselbe wie im Kopf: gruen, wenn der Befund "ok"
+       ist, rot bei einem Befund, grau wenn nie ein Messwert kam. Eine
+       Pumpe ohne Auskunft bekommt KEINEN gruenen Punkt - das ist der
+       Unterschied zwischen "in Ordnung" und "keine Auskunft". */
+    $pw_uq = pw_zahl(isset($pw_us['quelle_ts']) ? $pw_us['quelle_ts'] : 0, 0.0);
+    $pw_ua = $pw_uq > 0 ? (int) (time() - $pw_uq) : -1;
+    $pw_uk = $pw_ua < 0 ? 'sm-strich'
+           : (($pw_uf['befund'] === 0 && $pw_ua <= (int) pw_zahl($pw_up['stale_s'], 300.0))
+              ? 'sm-an' : 'sm-aus'); ?>
+<tr><td class="<?= $pw_uk ?>" style="text-align:center;font-size:1.15em;"><?=
+    $pw_uk === 'sm-an' ? '&#10003;' : ($pw_uk === 'sm-aus' ? '&#10007;' : '&ndash;') ?></td>
+    <td><a data-role="none" href="index.php?form=test&amp;pumpe=<?= rawurlencode($pw_ui) ?>"><?= pw_e(pw_pumpe_name($pw_up)) ?></a></td>
+    <td><?= pw_e(pw_t(pw_arten()[pw_art($pw_up)]['name'])) ?></td>
+    <td><?= pw_e(pw_t($pw_up['quelle'] === 'mqtt' ? 'PRUEF.Q_MQTT' : 'PRUEF.Q_LOXONE')) ?></td>
+    <td class="sm-mono"><?= pw_e(pw_mqtt_thema($pw_up)) ?></td>
+    <td><?= pw_e(pw_t($pw_befunde[$pw_uf['befund']])) ?><?=
+        $pw_ua < 0 ? ' (' . pw_e(pw_t('PRUEF.NIE')) . ')' : ' (' . (int) $pw_ua . ' s)' ?></td></tr>
+<?php endforeach; ?>
+</table>
+</div>
+<?php endif; ?>
 
 <h2><?= pw_e(pw_t('TEST.H_PRUEFUNG')) ?></h2>
 <div class="sm-hilfe"><?= pw_t('TEST.H_PRUEFUNG_TEXT') ?></div>
@@ -1011,7 +1231,7 @@ foreach ($pw_zeilen as $pw_zz) {
 <h3><?= pw_t('TEST.H_TECHNIK') ?></h3>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="selbsttest" value="1"><?= pw_t('TEST.K_SELBSTTEST') ?></button>
 </form>
@@ -1023,13 +1243,13 @@ foreach ($pw_zeilen as $pw_zz) {
 <p class="sm-hilfe"><?= pw_t('TEST.SCHALTEN_WARNUNG') ?></p>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;display:flex;gap:10px;align-items:center;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <input data-role="none" type="text" name="watt" placeholder="z. B. 600" style="max-width:140px;">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testwert" value="1"><?= pw_t('TEST.K_WERT') ?></button>
 </form>
 <form action="index.php" method="post" style="margin:0;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="quittieren" value="1"><?= pw_t('TEST.K_QUITTIEREN') ?></button>
 </form>
@@ -1047,7 +1267,7 @@ foreach ($pw_zeilen as $pw_zz) {
 <h2><?= pw_e(pw_t('REITER.LOG')) ?></h2>
 <div class="sm-hilfe"><?= pw_t('LOG.TEXT') ?> <span class="sm-mono"><?= pw_e($pw_p['log']) ?></span></div>
 <form action="index.php" method="post">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-log">
   <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= pw_t('LOG.K_LEEREN') ?></button>
@@ -1060,12 +1280,13 @@ foreach ($pw_zeilen as $pw_zz) {
 
 <script>
 (function () {
+	var pwQ = <?= json_encode('&pumpe=' . rawurlencode($pw_pid)) ?>;
 	var reiter = document.querySelectorAll('.sm-tab');
 	function zeige(id) {
 		reiter.forEach(function (r) { r.classList.toggle('sm-active', r.dataset.ziel === id); });
 		document.querySelectorAll('.sm-seite').forEach(function (s) { s.classList.toggle('sm-active', s.id === id); });
 		document.querySelectorAll('input[name="activetab"]').forEach(function (f) { f.value = id; });
-		if (history.replaceState) { history.replaceState(null, '', 'index.php?form=' + id.replace('tab-', '')); }
+		if (history.replaceState) { history.replaceState(null, '', 'index.php?form=' + id.replace('tab-', '') + pwQ); }
 	}
 	reiter.forEach(function (r) {
 		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });

@@ -100,7 +100,12 @@ function pw_sagen($text, $laut)
 }
 
 $pw_jetzt = time();
-$pw_cfg = pw_config();
+/* Die VOLLE Konfiguration - der Takt bedient ALLE Pumpen. $pw_cfg bleibt
+ * daneben die flache Sicht der ersten; alles Globale (das Aktionstoken)
+ * steht darin unveraendert. */
+$pw_voll = pw_config();
+$pw_cfg = pw_pumpe($pw_voll);
+$pw_ids = pw_pumpe_ids($pw_voll);
 
 if ((string) $pw_cfg['aktionstoken'] === '') {
     /* Die Oberflaeche wurde noch nie geoeffnet. Nichts tun und nichts
@@ -110,39 +115,70 @@ if ((string) $pw_cfg['aktionstoken'] === '') {
 }
 
 if ($pw_probe) {
-    $stand = pw_stand();
-    $felder = pw_felder($stand, $pw_cfg, $pw_jetzt);
-    $takt = pw_takt($stand);
-    echo "Zustand (nichts geschrieben, nichts gesendet):\n";
-    foreach ($felder as $k => $v) { printf("  %-16s %s\n", $k, var_export($v, true)); }
-    printf("\nAnlieferungen: %d, mittlerer Abstand %d s, laengster %d s -> %s\n",
-           $takt['anzahl'], $takt['mittlerer'], $takt['laengster'], $takt['urteil']);
+    /* Je Pumpe ein Block. Eine Probe, die nur die erste zeigt, laesst
+     * genau die Pumpe aus, wegen der man nachsieht. */
+    foreach ($pw_ids as $pw_id) {
+        $pw_p = pw_pumpe($pw_voll, $pw_id);
+        $stand = pw_stand($pw_id);
+        $felder = pw_felder($stand, $pw_p, $pw_jetzt);
+        $takt = pw_takt($stand);
+        printf("\n== %s (%s) - nichts geschrieben, nichts gesendet ==\n",
+               pw_pumpe_name($pw_p), $pw_id);
+        foreach ($felder as $k => $v) { printf("  %-16s %s\n", $k, var_export($v, true)); }
+        printf("  Anlieferungen: %d, mittlerer Abstand %d s, laengster %d s -> %s\n",
+               $takt['anzahl'], $takt['mittlerer'], $takt['laengster'], $takt['urteil']);
+    }
     exit(0);
 }
 
-list($pw_neu, $pw_grund, $pw_versucht, $pw_fehl) =
-    pw_verarbeiten(null, $pw_cfg, $pw_jetzt, 'takt');
-if ($pw_neu === null) {
-    if ($pw_grund === 'belegt') {
-        /* Kein Fehler: gerade schreibt eine Anlieferung. Der naechste Takt
-         * kommt in einer Minute. */
-        pw_sagen('Uebersprungen - eine Anlieferung schreibt gerade.', $pw_laut);
-        exit(0);
+/* JEDE Pumpe, eine nach der anderen.
+ *
+ * Eine Pumpe haelt die anderen NICHT auf: scheitert bei einer das Senden,
+ * wird das gezaehlt und am Ende gemeldet, aber die Schleife laeuft weiter.
+ * Ein Takt, der bei der ersten Pumpe abbricht, liesse die zweite dauerhaft
+ * ohne Aufsicht - und zwar still. */
+$pw_fehl_ges = 0;
+$pw_versucht_ges = 0;
+$pw_schreibfehler = array();
+foreach ($pw_ids as $pw_id) {
+    $pw_p = pw_pumpe($pw_voll, $pw_id);
+    list($pw_neu, $pw_grund, $pw_versucht, $pw_fehl) =
+        pw_verarbeiten(null, $pw_p, $pw_jetzt, 'takt');
+    if ($pw_neu === null) {
+        if ($pw_grund === 'belegt') {
+            /* Kein Fehler: gerade schreibt eine Anlieferung. Der naechste
+             * Takt kommt in einer Minute. */
+            pw_sagen(sprintf('%s: uebersprungen - eine Anlieferung schreibt gerade.',
+                             pw_pumpe_name($pw_p)), $pw_laut);
+            continue;
+        }
+        $pw_schreibfehler[] = $pw_id;
+        fwrite(STDERR, 'Pumpenwaechter: Zustand von ' . $pw_id
+                       . " konnte nicht geschrieben werden.\n");
+        pw_log('Takt: Zustand von ' . $pw_id . ' konnte nicht geschrieben werden.');
+        continue;
     }
-    fwrite(STDERR, "Pumpenwaechter: Zustand konnte nicht geschrieben werden.\n");
-    pw_log('Takt: Zustand konnte nicht geschrieben werden.');
-    exit(1);
+
+    /* Gerechnet, gesendet und geschrieben hat pw_verarbeiten() - unter
+     * EINER Sperre und in EINEM Schreibvorgang. Hier steht nur die
+     * Bilanz. */
+    $pw_versucht_ges += $pw_versucht;
+    $pw_fehl_ges += $pw_fehl;
+    $pw_felder = pw_felder($pw_neu, $pw_p, $pw_jetzt);
+    if ($pw_fehl > 0) {
+        /* Ein LOGOK setzt voraus, dass nichts gescheitert ist. Beides wird
+         * getrennt genannt (REGELN_2, "Der Zaehler zaehlt Zustellungen"). */
+        pw_log(sprintf('Takt %s: %d Themen versucht, %d gescheitert.',
+                       $pw_id, $pw_versucht, $pw_fehl));
+    }
+    pw_sagen(sprintf('%s (%s): laeuft=%d befund=%d sperre=%d - %d Themen gesendet, %d gescheitert.',
+                     pw_pumpe_name($pw_p), $pw_id,
+                     $pw_felder['laeuft'], $pw_felder['befund'], $pw_felder['sperre'],
+                     $pw_versucht, $pw_fehl), $pw_laut);
 }
 
-/* Gerechnet, gesendet und geschrieben hat pw_verarbeiten() - unter EINER
- * Sperre und in EINEM Schreibvorgang. Hier steht nur noch die Bilanz. */
-$pw_felder = pw_felder($pw_neu, $pw_cfg, $pw_jetzt);
-if ($pw_fehl > 0) {
-    /* Ein LOGOK setzt voraus, dass nichts gescheitert ist. Beides wird
-     * getrennt genannt (REGELN_2, "Der Zaehler zaehlt Zustellungen"). */
-    pw_log(sprintf('Takt: %d Themen versucht, %d gescheitert.', $pw_versucht, $pw_fehl));
+if (count($pw_ids) > 1) {
+    pw_sagen(sprintf('Takt ueber %d Pumpen: %d Themen gesendet, %d gescheitert.',
+                     count($pw_ids), $pw_versucht_ges, $pw_fehl_ges), $pw_laut);
 }
-pw_sagen(sprintf('Takt: laeuft=%d befund=%d sperre=%d - %d Themen gesendet, %d gescheitert.',
-                 $pw_felder['laeuft'], $pw_felder['befund'], $pw_felder['sperre'],
-                 $pw_versucht, $pw_fehl), $pw_laut);
-exit($pw_fehl > 0 ? 1 : 0);
+exit(($pw_fehl_ges > 0 || $pw_schreibfehler) ? 1 : 0);

@@ -1,12 +1,115 @@
 # Pumpenwächter
 
-**Überwacht eine Pumpe ohne eigene Datenschnittstelle — an ihrer
-Leistungsaufnahme.** Loxone liefert die Watt-Zahl des Zwischenzählers an, das
-Plugin stellt daraus einen Befund und meldet ihn zurück.
+**Überwacht Pumpen ohne eigene Datenschnittstelle — an ihrer
+Leistungsaufnahme.** Ein Zwischenzähler liefert die Watt-Zahl, das Plugin
+stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
+**mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
+MQTT-Thema und eigenem Zustand.
 
-Version 0.9.14 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.0 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.0 — mehrere Pumpen
+
+Bis 0.9.14 überwachte das Plugin **genau eine** Pumpe. Die Fassung 1.0.0
+führt beliebig viele: in diesem Haus ein **Hauswasserwerk** (Grundfos SCALA1)
+und eine **Sumpfpumpe** im Pumpensumpf, die grundverschieden zu behandeln
+sind.
+
+### Die Pumpenart entscheidet, ob gesperrt werden darf
+
+| Art | sperrt? | typische Frist |
+|---|---|---|
+| **Hauswasserwerk** (Druckerhöhung) | **ja** | keine Ruhefrist |
+| **Entwässerungspumpe** (Sumpf, Drainage) | **nie** | 48 h ohne Lauf → Meldung |
+
+Eine trocken laufende Druckpumpe zerstört ihre Gleitringdichtung in Minuten —
+sie *muss* abschaltbar sein. Eine gesperrte Sumpfpumpe dagegen bedeutet
+Wasser im Keller. Deshalb ist das Sperrverbot bei der Entwässerungspumpe
+**hart im Rechenkern** verankert und nicht nur ein Haken in der Oberfläche:
+`pw_sperrt()` fragt zuerst die Art und gibt bei `entwaesserung` unabhängig
+von jeder Einstellung `false` zurück.
+
+Dafür bekommt sie den Befund, den ein Hauswasserwerk nicht braucht:
+**„seit langem kein Lauf"**. Er entsteht gerade daraus, dass *nichts*
+geschieht — eine Sumpfpumpe, die seit 48 Stunden nicht angesprungen ist, hat
+einen gefallenen FI, einen klemmenden Schwimmer oder ein blockiertes Laufrad;
+man merkt es sonst erst, wenn der Keller voll ist. Er meldet **nur**, wenn
+schon einmal ein Lauf gesehen wurde: eine frische Installation soll nicht
+Alarm geben, bevor sie etwas gemessen hat.
+
+### Was je Pumpe getrennt geführt wird
+
+Konfiguration, Zustand, Tagesbilanz, MQTT-Themenpräfix, Quell-Thema und die
+Adresse für Loxone. Zwei Pumpen zählen **nie** auf denselben Zähler; der
+Reiter *Test* prüft ausdrücklich nach, ob sich zwei Themenpräfixe
+verschlucken könnten.
+
+### Wie die Zuordnung funktioniert
+
+Der MQTT-Zuhörer abonniert alle Quell-Themen in **einem** Prozess
+(`mosquitto_sub` nimmt mehrere `-t`) und ordnet jede eintreffende Zeile nach
+den **MQTT-Regeln** zu — abschnittweise, `+` deckt genau einen Abschnitt, `#`
+den Rest. Ein Zeichenkettenvergleich wäre hier falsch: in diesem Haus stehen
+`shelly1pmg4/#` und `shelly1pmg4-Pumpensumpf/#` nebeneinander, und ein
+`strpos()` schlüge die Zeilen der zweiten der ersten zu. Passen mehrere
+Filter, gewinnt der **spezifischere**. Eine Zeile, die zu keiner Pumpe
+gehört, wird verworfen **und gezählt** — der Reiter *Test* zeigt die Zahl.
+
+### Die Adresse für Loxone
+
+Sie trägt jetzt die Kennung der Pumpe:
+
+```
+?token=…&aktion=wert&watt=<v>&pumpe=sumpf
+```
+
+**Ohne `&pumpe=` ist es die erste Pumpe — genau wie bisher.** Das ist
+Absicht: in einem Miniserver stehen die Adressen in virtuellen Ausgängen,
+Bausteinen und Formeln, und ein Update, das sie alle ungültig macht, hält die
+Anlage an. Eine **unbekannte** Kennung wird dagegen abgewiesen
+(`400 GRUND=PUMPE`) und nicht stillschweigend auf die erste umgebogen: hier
+sitzt niemand davor, und ein Tippfehler in einer einzigen Adresse legte sonst
+monatelang die Messwerte der einen Pumpe bei der anderen ab.
+
+### Die Vorlagen
+
+| Vorlage | Umfang |
+|---|---|
+| **MQTT** (`VI_pumpenwaechter.xml`) | **alle** Pumpen in einer Datei |
+| **Ausgang** (`VQ_pumpenwaechter.xml`) | **alle** Pumpen, drei Befehle je Pumpe |
+| **HTTP** (`VI_pumpenwaechter_http_<id>.xml`) | **je Pumpe eine** |
+
+Die HTTP-Vorlage kann nicht anders: ein `VirtualInHttp` hat genau **eine**
+Abfrageadresse, und die steht an der Wurzel. Mehrere Pumpen brauchen mehrere
+Wurzeln, und XML hat eine.
+
+### Bei einer Pumpe ändert sich nichts
+
+Kein Namenszusatz in den Vorlagen, keine Pumpenwahl mit einem Knopf, kein
+anderer Dateiname, dieselben Adressen. Der Zusatz erscheint erst, wenn es
+etwas zu unterscheiden gibt. Eine vorhandene Konfiguration aus 0.9.14 wandert
+beim ersten Lesen in die neue Form; eine Sicherung aus 0.9.14 lässt sich
+weiterhin zurückspielen.
+
+### Behoben, gefunden beim Umbau
+
+* Die **Loxone-Vorlage** bekam nach der Wanderung die volle Konfiguration
+  statt der flachen Sicht einer Pumpe — und schrieb damit **Werksvorgaben**
+  in eine Datei, die der Anwender in Config einliest.
+* Eine **Sicherung aus 0.9.14 mit einem einzigen Schlüssel** setzte alles
+  Übrige auf Werksvorgabe zurück: Modell, Trockenlaufschwelle und Sperren
+  fielen still zurück, und die Meldung sprach von „23 von 27 übernommen".
+* Ein **fremder Schlüssel** im oberen Teil einer Sicherung wurde von der
+  Wanderung weggeworfen, bevor die Prüfung ihn sehen konnte — die Datei galt
+  als angenommen.
+* `lauf_s_vortag` und `starts_vortag` meldeten für **jede** Pumpe die
+  Tagesbilanz der ersten. Eine plausible Zahl am falschen Ort.
+* Der **Minutentakt** lief nur für die erste Pumpe. Damit fehlten der zweiten
+  Veralten-Erkennung, Ruhefrist, Lebenszeichen und Tagesbuchung.
+* Die **Selbstprüfung** las den Zustand der ersten Pumpe, während sie die
+  gewählte prüfte.
 
 ## Neu in 0.9.14
 
@@ -186,13 +289,17 @@ geschützt (`hash_equals`, fail closed).
 | `?token=…&aktion=anforderung&an=1|0` | Pumpe angefordert (optional) |
 | `?token=…&aktion=selftest` | nur das Wortzeichen prüfen, löst **nichts** aus |
 
+Jeder dieser Aufrufe nimmt zusätzlich `&pumpe=<kennung>`. **Ohne die Angabe
+ist es die erste Pumpe** — Adressen aus 0.9.14 tun damit unverändert dasselbe.
+Eine unbekannte Kennung wird mit `400 FEHLER;OK=0;GRUND=PUMPE` abgewiesen.
+
 Auch die Wertlieferung ist tokenpflichtig, obwohl sie „nur" einen Messwert
 trägt: wer beliebige Watt-Zahlen einliefern könnte, könnte eine Sperre ohne
 Quittungspflicht durch erfundene Normalwerte aufheben.
 
 ## Prüfstand
 
-* `php webfrontend/html/pw_regel.php` — 79 Fälle des Rechenkerns, ohne
+* `php webfrontend/html/pw_regel.php` — 119 Fälle des Rechenkerns, ohne
   Anlage und ohne Netz. Der Kern kennt kein Netz, keine Datei und keine Uhr,
   die ihm nicht übergeben wurde; deshalb lässt er sich vollständig ohne Pumpe
   prüfen.
@@ -211,7 +318,11 @@ Quittungspflicht durch erfundene Normalwerte aufheben.
   zeigen, was ankommt: welche Nachricht einen Messwert trägt und welche
   nicht. Schreibt nichts und sendet nichts. Das ist der Schritt, den der
   Selbsttest **nicht** ersetzen kann — er erreicht den Broker.
-* Reiter *Test*, **Selbstprüfung** — bis zu 26 Zeilen mit Haken, Kreuz und Strich.
+* Reiter *Test*, **Selbstprüfung** — bis zu 30 Zeilen mit Haken, Kreuz und
+  Strich, für die **gewählte** Pumpe; darüber bei mehreren Pumpen eine
+  Übersicht über **alle**.
+  Zwei der Zeilen gelten allen Pumpen gemeinsam: ob sich zwei MQTT-Themen
+  verschlucken, und ob jede eintreffende Zeile einer Pumpe gehört.
   Ein Strich ist ausdrücklich *kein* Haken: er heißt „konnte hier nicht
   gemessen werden".
 * Reiter *Bilanz* — misst, ob Ihr virtueller Ausgang zyklisch oder nur bei

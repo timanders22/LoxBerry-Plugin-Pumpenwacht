@@ -453,7 +453,7 @@ if ($pw_hat('status')) {
 
 /* ---------------- Voraussetzungen ---------------- */
 
-$pw_cfg = pw_config();
+$pw_cfg = pw_pumpe(pw_config());
 
 /* Die Selbstpruefung steht VOR der Quellenpruefung: auf einer Anlage, die
  * noch ueber Loxone laeuft, will man vor dem Umstellen wissen, ob der Weg
@@ -462,15 +462,40 @@ if ($pw_hat('--selbsttest')) {
     exit(pw_selbsttest_dienst($pw_cfg));
 }
 
-if ((string) $pw_cfg['quelle'] !== 'mqtt' && !$pw_probe) {
-    /* Kein Fehler: die Quelle steht auf Loxone, der Dienst wird nicht
-     * gebraucht. Er sagt es einmal und geht. */
-    echo "Die Messwertquelle steht auf \"Loxone\" - der Zuhoerer wird nicht gebraucht.\n";
-    exit(0);
+/* Die VOLLE Konfiguration - der Zuhoerer bedient alle Pumpen und muss
+ * deshalb wissen, welche es gibt. $pw_cfg bleibt daneben die flache Sicht
+ * der ersten Pumpe; alles, was global ist (Broker, Geheimnisse), steht
+ * darin unveraendert. */
+$pw_voll = pw_config();
+
+/* Alle Quell-Themen der Pumpen, die ueber MQTT lesen. */
+$pw_themen = array();
+$pw_ohne_thema = array();
+foreach (pw_pumpe_ids($pw_voll) as $pw_pid_) {
+    $pw_p_ = pw_pumpe($pw_voll, $pw_pid_);
+    if ((string) $pw_p_['quelle'] !== 'mqtt') { continue; }
+    $pw_th_ = trim((string) $pw_p_['quelle_topic']);
+    if ($pw_th_ === '') { $pw_ohne_thema[] = $pw_pid_; continue; }
+    $pw_themen[] = $pw_th_;
 }
 
-$pw_thema = trim((string) $pw_cfg['quelle_topic']);
-if ($pw_thema === '') {
+if (!$pw_themen && !$pw_probe) {
+    /* Kein Fehler: keine Pumpe liest ueber MQTT, der Dienst wird nicht
+     * gebraucht. Er sagt es einmal und geht - und nennt die Zahl, damit
+     * "keine" nicht mit "eine, die schweigt" verwechselt wird. */
+    printf("Keine der %d Pumpen liest ueber MQTT - der Zuhoerer wird nicht gebraucht.\n",
+           count(pw_pumpe_ids($pw_voll)));
+    exit(0);
+}
+if ($pw_ohne_thema) {
+    /* Eine Pumpe auf MQTT ohne Thema ist ein Einrichtungsfehler und wird
+     * GENANNT, nicht uebergangen - sonst sucht jemand lange, warum genau
+     * eine von zwei Pumpen keine Werte bekommt. */
+    fwrite(STDERR, "Ohne Quell-Thema, wird nicht abgehorcht: "
+                   . implode(', ', $pw_ohne_thema) . "\n");
+    pw_log('Zuhoerer: ohne Quell-Thema - ' . implode(', ', $pw_ohne_thema));
+}
+if (!$pw_themen) {
     fwrite(STDERR, "Es ist kein Quell-Thema eingetragen (Reiter Einstellungen).\n");
     pw_log('Zuhoerer: kein Quell-Thema eingetragen - nichts zu horchen.');
     exit(2);
@@ -505,11 +530,15 @@ $pw_ordner = pw_broker_optionsdatei(true);
  * /proc/<pid>/cmdline hat die Rechte 444, und dieser Prozess laeuft dauernd -
  * jeder lokale Benutzer koennte mitlesen. mosquitto_sub liest sie aus
  * $XDG_CONFIG_HOME/mosquitto_sub; auf der Zeile steht nur der Pfad. */
+/* EIN Prozess, mehrere -t. Am Geraet gemessen (08.09.2026): mosquitto_sub
+ * nimmt beliebig viele Themen entgegen und schreibt sie in denselben Strom.
+ * Ein Prozess je Pumpe waere die schlechtere Wahl - jeder braucht seine
+ * Schale, und proc_terminate() trifft die Schale, nicht mosquitto_sub. */
 $pw_argv = array('mosquitto_sub',
                  '-h', $pw_b['host'],
                  '-p', (string) $pw_b['port'],
-                 '-v', '-q', '1',
-                 '-t', $pw_thema);
+                 '-v', '-q', '1');
+foreach ($pw_themen as $pw_th) { $pw_argv[] = '-t'; $pw_argv[] = $pw_th; }
 $pw_befehl = ($pw_ordner !== '' ? 'XDG_CONFIG_HOME=' . escapeshellarg($pw_ordner) . ' ' : '')
            . implode(' ', array_map('escapeshellarg', $pw_argv));
 
@@ -525,8 +554,43 @@ stream_set_blocking($pw_pipes[2], false);
 
 if (!$pw_probe) {
     @file_put_contents($pw_pidfile, (string) getmypid());
-    pw_log('Zuhoerer gestartet, Thema ' . $pw_thema . ' an ' . $pw_b['host']
-           . ':' . $pw_b['port'] . '.');
+    pw_log('Zuhoerer gestartet, Themen ' . implode(', ', $pw_themen)
+           . ' an ' . $pw_b['host'] . ':' . $pw_b['port'] . '.');
+}
+
+/* Die aufbewahrte Anwesenheit EINMAL abholen.
+ *
+ * Am Geraet gemessen (08.09.2026): `<basis>/online` liegt aufbewahrt im
+ * Broker, und trotzdem stand quelle_online im Zustand auf "keine Auskunft".
+ * Eine aufbewahrte Meldung kommt NUR beim Abonnieren; der Zuhoerer hatte sie
+ * bekommen, die Installation raeumte den Zustand drei Sekunden spaeter ab,
+ * und danach kam sie nie wieder.
+ *
+ * Ein eigener kurzer Aufruf je Pumpe loest das unabhaengig von der
+ * Reihenfolge. Er wartet hoechstens zwei Sekunden und schreibt nichts, wenn
+ * nichts kommt - ein Zaehler ohne online-Thema ist kein Fehler. */
+if (!$pw_probe && pw_hat_mosquitto()) {
+    foreach (pw_pumpe_ids($pw_voll) as $pw_oid) {
+        $pw_op = pw_pumpe($pw_voll, $pw_oid);
+        if ((string) $pw_op['quelle'] !== 'mqtt') { continue; }
+        $pw_ot = pw_online_thema($pw_op['quelle_topic']);
+        if ($pw_ot === '') { continue; }
+        $pw_oargv = array('mosquitto_sub', '-h', $pw_b['host'],
+                          '-p', (string) $pw_b['port'], '-v', '-q', '1',
+                          '-C', '1', '-W', '2', '-t', $pw_ot);
+        $pw_obefehl = ($pw_ordner !== ''
+                       ? 'XDG_CONFIG_HOME=' . escapeshellarg($pw_ordner) . ' ' : '')
+                    . implode(' ', array_map('escapeshellarg', $pw_oargv));
+        $pw_oaus = @shell_exec($pw_obefehl . ' 2>/dev/null');
+        if (is_string($pw_oaus) && trim($pw_oaus) !== '') {
+            foreach (explode("\n", trim($pw_oaus)) as $pw_ozeile) {
+                if (trim($pw_ozeile) === '') { continue; }
+                pw_zeile_verarbeiten($pw_ozeile, $pw_op, time(), true);
+            }
+            pw_log('Zuhoerer: Anwesenheit von ' . $pw_oid . ' abgeholt ('
+                   . trim($pw_oaus) . ').');
+        }
+    }
 }
 
 $pw_ende = false;
@@ -554,6 +618,7 @@ $pw_rest = '';
 $pw_start = time();
 $pw_gesehen = 0;      // Nachrichten mit Messwert
 $pw_uebergangen = 0;  // Nachrichten ohne Messwert (der Normalfall!)
+$pw_fremd = 0;        // Zeilen, die zu KEINER Pumpe gehoeren
 $pw_letzte_cfg = @filemtime($pw_p['config']);
 /* Nach einem Tag geordnet aufhoeren. Der Waechter startet sofort neu. Ein
  * Prozess, der wochenlang laeuft, sammelt Kleinigkeiten - und ein geplantes
@@ -593,7 +658,24 @@ while (!$pw_ende) {
             /* Die Arbeit steckt in pw_zeile_verarbeiten() - dort laesst sie
              * sich mit den echten gemessenen Zeilen pruefen, ohne Broker
              * und ohne mosquitto_sub. Hier bleibt nur die Buchfuehrung. */
-            $e = pw_zeile_verarbeiten($z, $pw_cfg, time(), !$pw_probe);
+            /* Zuerst die Zuordnung: welcher Pumpe gehoert diese Zeile?
+             * Eine, die zu keiner passt, wird verworfen UND gezaehlt - sie
+             * ist ein Einrichtungsfehler, meistens ein von Hand erweitertes
+             * Abo, und still verwerfen hiesse ihn verbergen. */
+            $pw_thema_z = '';
+            $pw_sp = strpos((string) $z, ' ');
+            if ($pw_sp !== false) { $pw_thema_z = substr((string) $z, 0, $pw_sp); }
+            $pw_id = $pw_thema_z === ''
+                   ? null : pw_pumpe_fuer_thema($pw_voll, $pw_thema_z);
+            if ($pw_id === null) {
+                if (trim((string) $z) !== '') {
+                    $pw_fremd++;
+                    if ($pw_probe) { echo "  OHNE PUMPE   : " . $pw_thema_z . "\n"; }
+                }
+                continue;
+            }
+            $e = pw_zeile_verarbeiten($z, pw_pumpe($pw_voll, $pw_id),
+                                      time(), !$pw_probe);
             if ($e['art'] === 'messwert') {
                 $pw_gesehen++;
                 if ($pw_probe) {
@@ -618,7 +700,16 @@ while (!$pw_ende) {
         }
     }
 
-    if (!$pw_probe) { @file_put_contents($pw_tsfile, (string) time()); }
+    if (!$pw_probe) {
+        @file_put_contents($pw_tsfile, (string) time());
+        /* Der Bericht neben dem Lebenszeichen. Er traegt vor allem die
+         * Zahl der Zeilen, die zu KEINER Pumpe gehoeren - der Reiter Test
+         * kann sie sonst nirgends erfahren, und still verworfene Zeilen
+         * sind genau die, die niemand vermisst. */
+        pw_json_schreiben($pw_p['datadir'] . '/dienst.json', array(
+            'ts' => time(), 'gesehen' => $pw_gesehen,
+            'uebergangen' => $pw_uebergangen, 'fremd' => $pw_fremd));
+    }
 
     /* Ist mosquitto_sub gestorben? Dann endet auch dieser Lauf - der
      * Waechter startet beide neu. Weiterlaufen hiesse, still nichts mehr zu
@@ -664,7 +755,12 @@ while (!$pw_ende) {
 }
 
 if ($pw_probe) {
-    printf("\n%d Nachricht(en) mit Messwert, %d ohne.\n", $pw_gesehen, $pw_uebergangen);
+    printf("\n%d Nachricht(en) mit Messwert, %d ohne, %d ohne Pumpe.\n",
+           $pw_gesehen, $pw_uebergangen, $pw_fremd);
+    if ($pw_fremd > 0) {
+        echo "Zeilen ohne Pumpe kommen an, gehoeren aber zu keinem Quell-Thema.\n"
+           . "Meistens ein Abo, das von Hand erweitert wurde.\n";
+    }
     if ($pw_gesehen === 0) {
         echo "Kein einziger Messwert. Moegliche Gruende: falsches Thema, der\n"
            . "Zaehler meldet gerade nichts, oder die Anmeldung am Broker wurde\n"

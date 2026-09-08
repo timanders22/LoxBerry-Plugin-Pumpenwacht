@@ -38,7 +38,12 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
 fi
 
 PDATA="$BASE/data/plugins/$PFOLDER"
-rm -f "$PDATA/stand.json" "$PDATA/endpunkt.json"
+# Die Endpunktprobe liegt seit 1.0.0 JE PUMPE (endpunkt_<kennung>.json);
+# die endungslose Datei kommt noch aus 0.9.14. Und dienst.json ist der
+# Bericht des ALTEN Zuhoerers - nach einem Update ist er eine Auskunft
+# ueber einen Prozess, den es nicht mehr gibt.
+rm -f "$PDATA/stand.json" "$PDATA/endpunkt.json" \
+      "$PDATA"/endpunkt_*.json "$PDATA/dienst.json"
 if [ -f "$PDATA/tage.json" ]; then
     echo "<OK> Tagesbilanz behalten ($(grep -o '"tag"' "$PDATA/tage.json" 2>/dev/null | wc -l) Tage)."
 fi

@@ -7,6 +7,21 @@
  *
  *   ?token=<TOKEN>&aktion=wert&watt=<ZAHL>   Messwert anliefern, rechnen,
  *                                            speichern, per MQTT melden
+ *
+ * Seit 1.0.0 kann das Plugin mehrere Pumpen fuehren. Welche gemeint ist,
+ * sagt ein zusaetzliches &pumpe=<KENNUNG>:
+ *
+ *   ?token=<TOKEN>&aktion=wert&watt=600&pumpe=sumpf
+ *
+ * OHNE die Angabe ist es die ERSTE Pumpe - genau wie bisher. Das ist
+ * Absicht: in einem Miniserver stehen die Adressen in virtuellen
+ * Ausgaengen, Bausteinen und Formeln, und ein Update, das sie alle
+ * ungueltig macht, haelt die Anlage an.
+ *
+ * Eine UNBEKANNTE Kennung wird abgewiesen (400, GRUND=PUMPE) und nicht auf
+ * die erste umgebogen. Hier sitzt niemand davor: ein stiller Rueckfall
+ * liesse einen Tippfehler in einer Loxone-Adresse monatelang die Messwerte
+ * der einen Pumpe bei der anderen ablegen.
  *   ?token=<TOKEN>&aktion=stand              alle Werte als Textzeilen
  *   ?token=<TOKEN>&aktion=zeile              dieselben Werte in EINER Zeile
  *   ?token=<TOKEN>&aktion=json               dasselbe als JSON
@@ -47,7 +62,7 @@ $pw_selbst = ($pw_aktion === 'selftest');
  * aus der Zweitschrift wieder her. Gemessen am 28.08.2026 - die Antwort
  * war korrekt 403, die Datei trotzdem geschrieben.
  * Siehe REGELN_2, "Der unangemeldete Endpunkt legt auch nichts AN". */
-$pw_cfg = pw_config(false);
+$pw_cfg = pw_pumpe(pw_config(false));
 if ((string) $pw_cfg['aktionstoken'] === '') {
     http_response_code(403);
     if ($pw_selbst) {
@@ -62,6 +77,28 @@ if (!pw_token_ok($pw_cfg)) {
     http_response_code(403);
     echo $pw_selbst ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FEHLER;OK=0;GRUND=TOKEN\n";
     exit;
+}
+
+/* WELCHE PUMPE?
+ *
+ * Steht hier NACH der Tokenpruefung: davor liesse sich an der Unterscheidung
+ * 400 (Kennung unbekannt) / 403 (Wortzeichen falsch) ablesen, welche
+ * Kennungen es in dieser Anlage gibt - eine Auskunft an jeden, der die
+ * Adresse kennt.
+ *
+ * Ohne Angabe die erste Pumpe. Mit unbekannter Angabe: abgewiesen. */
+$pw_pid = isset($_GET['pumpe']) ? trim((string) $_GET['pumpe']) : '';
+if ($pw_pid !== '') {
+    $pw_voll = pw_config(false);
+    if (!in_array($pw_pid, pw_pumpe_ids($pw_voll), true)) {
+        http_response_code(400);
+        echo "FEHLER;OK=0;GRUND=PUMPE\n";
+        /* Die vorhandenen Kennungen werden NICHT genannt - sie stehen in der
+         * Oberflaeche, und die ist angemeldet. */
+        echo "Es gibt keine Pumpe mit dieser Kennung.\n";
+        exit;
+    }
+    $pw_cfg = pw_pumpe($pw_voll, $pw_pid);
 }
 
 if (!in_array($pw_aktion, $pw_erlaubt, true)) {
@@ -128,7 +165,7 @@ if ($pw_aktion === 'quittieren') {
     /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei.
      * Und in derselben Form wie jede andere Antwort - eine
      * Befehlserkennung auf OK= findet sonst hier nichts. */
-    $ist = pw_stand();
+    $ist = pw_stand($pw_cfg['id']);
     echo "OK=1;SPERRE=" . (!empty($ist['sperre']) ? 1 : 0)
          . ";QUITTUNG=" . (!empty($ist['quittung']) ? 1 : 0) . "\n";
     exit;
@@ -156,7 +193,7 @@ if ($pw_aktion === 'anforderung') {
     exit;
 }
 
-$pw_felder = pw_felder(pw_stand(), $pw_cfg);
+$pw_felder = pw_felder(pw_stand($pw_cfg['id']), $pw_cfg);
 
 if ($pw_aktion === 'json') {
     header('Content-Type: application/json; charset=utf-8');
@@ -174,7 +211,7 @@ if ($pw_aktion === 'zeile') {
     /* EINE Zeile fuer einen virtuellen Eingang mit Befehlserkennung - der
      * Weg ohne MQTT-Gateway. Die Lebenszeichen gehoeren dazu, sonst kann
      * Loxone auf diesem Weg keinen Ausfall erkennen. */
-    $st = pw_stand();
+    $st = pw_stand($pw_cfg['id']);
     $pw_felder['status_ok'] = ($pw_felder['laeuft'] === -1) ? 0 : 1;
     $pw_felder['status_ts'] = time();
     $pw_felder['status_zaehler'] = (int) pw_zahl(isset($st['status_zaehler']) ? $st['status_zaehler'] : 0, 0.0);
