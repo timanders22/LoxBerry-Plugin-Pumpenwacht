@@ -6,7 +6,7 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.0 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.1 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
 
