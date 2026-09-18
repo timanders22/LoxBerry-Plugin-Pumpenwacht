@@ -663,11 +663,133 @@ function pw_praefixe_pruefen($cfg)
     return $mangel;
 }
 
+/**
+ * Traegt diese Datei ueberhaupt etwas?
+ *
+ * Nicht "ist sie leer?", sondern "laesst sie sich als JSON-Objekt mit
+ * mindestens einem Schluessel lesen?". Der Unterschied ist gemessen
+ * (Bestand-2026-09-18/klasse-A, Fall kaputt, 18.09.2026): eine
+ * abgeschnittene pumpenwacht.json ist weder leer noch ein leeres Objekt und
+ * ging bis 1.0.2 an der Selbstheilung vorbei. json_decode gab null,
+ * pw_json_lesen() daraus ein leeres Feld, die Oberflaeche wuerfelte ein
+ * neues Aktionstoken und schrieb es samt Zweitschrift - danach beantwortet
+ * der Endpunkt jede Loxone-Adresse mit dem alten Token mit HTTP 403, und
+ * zurueckrechnen laesst sich das Token nicht.
+ *
+ * Rueckgabe: die gelesenen Daten oder null, wenn die Datei nichts traegt.
+ * Bauart: Sprachsteuerung 0.11.8 sp_inhalt_oder_null(), Intercom 2.2.11.
+ */
+function pw_inhalt_oder_null($pfad)
+{
+    if (!is_file($pfad)) { return null; }
+    $roh = trim((string) @file_get_contents($pfad));
+    if ($roh === '') { return null; }
+    $d = json_decode($roh, true);
+    if (!is_array($d) || $d === array()) { return null; }
+    return $d;
+}
+
+/**
+ * Steht in der Datei etwas, das der Rede wert ist?
+ *
+ * Kein Text heisst: gar nichts, ein leeres Objekt oder ein leeres Feld. Nur
+ * eine solche Datei darf ersetzt werden, ohne dass ihr Inhalt vorher
+ * beiseitegelegt wird. Alles andere kann ein Rest sein, aus dem sich das
+ * Aktionstoken noch von Hand herauslesen laesst.
+ *
+ * Die Frage steht bewusst POSITIV (!==) da, wie im Vorbild Sprachsteuerung
+ * 0.11.8: die verneinte Form ist die Zeichenfolge, nach der die
+ * Bestandssuche nach Formentscheiden fahndet, und ein Bauteil darf nicht
+ * tragen, wonach ein Werkzeug sucht (Regeln/02).
+ */
+function pw_datei_hat_text($pfad)
+{
+    if (!is_file($pfad)) { return false; }
+    $rest = preg_replace('/\s+/', '', (string) @file_get_contents($pfad));
+    return $rest !== '' && $rest !== '{}' && $rest !== '[]';
+}
+
+/**
+ * Traegt diese Konfiguration das, was nur sie tragen kann?
+ *
+ * Das Aktionstoken. Es steht in JEDER Loxone-Adresse dieses Plugins; geht es
+ * verloren, scheitern alle virtuellen Eingaenge im Miniserver. Alles andere
+ * - Schwellen, Themen, Namen - laesst sich in der Oberflaeche noch einmal
+ * eintragen.
+ *
+ * Eine Konfiguration OHNE Token gibt es auf keinem Weg der Oberflaeche:
+ * index.php fuellt es beim ersten Seitenaufbau. Steht dort keines, ist die
+ * Datei nicht aus einem gespeicherten Stand hervorgegangen - dann wird
+ * geheilt statt gewuerfelt.
+ */
+function pw_config_hat_inhalt($c)
+{
+    return is_array($c) && $c !== array()
+        && trim((string) (isset($c['aktionstoken']) ? $c['aktionstoken'] : '')) !== '';
+}
+
+/**
+ * Fehlt dem neuen Stand etwas, das in der Zweitschrift steht?
+ *
+ * Verglichen wird, ob ein SCHLUESSEL fehlt, nicht ob ein Wert leer ist: eine
+ * geleerte Pumpenliste waere ein gewolltes Loeschen und wird nachgezogen,
+ * ein fehlender Schluessel dagegen heisst, der neue Stand ist gar nicht aus
+ * dem gespeicherten hervorgegangen. Ein leeres Aktionstoken gibt es auf
+ * keinem Weg der Oberflaeche und gilt deshalb als fehlend.
+ *
+ * Rueckgabe: die Namen der fehlenden Felder (leer = die Zweitschrift darf
+ * erneuert werden).
+ */
+function pw_zweitschrift_fehlt($sicherung, array $neu, array $felder)
+{
+    $z = pw_inhalt_oder_null($sicherung);
+    if ($z === null) { return array(); }
+    $fehlt = array();
+    foreach ($felder as $feld) {
+        if (!array_key_exists($feld, $z)) { continue; }
+        $hat_z = is_string($z[$feld]) ? (trim($z[$feld]) !== '') : !empty($z[$feld]);
+        if (!$hat_z) { continue; }
+        $hat_n = array_key_exists($feld, $neu)
+               && (is_string($neu[$feld]) ? (trim($neu[$feld]) !== '') : true);
+        if (!$hat_n) { $fehlt[] = $feld; }
+    }
+    return $fehlt;
+}
+
+/**
+ * Die Zweitschrift erneuern - oder begruendet nicht.
+ *
+ * Eine Zweitschrift MIT Inhalt darf nie durch einen Stand OHNE Inhalt
+ * ersetzt werden. Das Speichern selbst wird dadurch nicht verhindert, nur
+ * der einzige Rueckweg nicht zerstoert; das Protokoll sagt es.
+ * Bauart: Sprachsteuerung 0.11.8, Intercom 2.2.11 (17.09.2026).
+ */
+function pw_zweitschrift_ziehen($quelle, $ziel, array $neu, array $felder, $rechte = null)
+{
+    $fehlt = pw_zweitschrift_fehlt($ziel, $neu, $felder);
+    if ($fehlt) {
+        pw_log('WARNUNG: Die Zweitschrift bleibt unveraendert - der gespeicherte Stand '
+             . 'traegt nicht, was dort steht (' . implode(', ', $fehlt) . '): ' . $ziel);
+        return false;
+    }
+    if (!@copy($quelle, $ziel)) { return false; }
+    if ($rechte !== null) { @chmod($ziel, $rechte); }
+    return true;
+}
+
 function pw_config($erzeugen = true)
 {
     $p = pw_paths();
-    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
+    /* Geheilt wird nach INHALT, nicht nach Form.
+     *
+     * Bis 1.0.2 stand hier ein Vergleich der ROHEN Zeichenkette gegen leer
+     * und gegen das leere Objekt. Eine abgeschnittene Datei ist weder das
+     * eine noch das andere - sie kam nie in diesen Zweig, und die
+     * Oberflaeche wuerfelte danach ein neues Aktionstoken. Gemessen am
+     * 18.09.2026 (Bestand-2026-09-18/klasse-A, Faelle kaputt und leer):
+     * Konfiguration UND Zweitschrift standen hinterher auf Werkseinstellung,
+     * aus drei Pumpen war eine geworden. */
+    if ($erzeugen && !pw_config_hat_inhalt(pw_inhalt_oder_null($p['config']))) {
         /* NACHSEHEN statt das @ arbeiten lassen.
          *
          * Das @ unterdrueckt die AUSGABE, nicht das EREIGNIS - ein eigener
@@ -681,13 +803,29 @@ function pw_config($erzeugen = true)
          * bleibt fuer den unvorhergesehenen Fall stehen, aber es ist nicht
          * mehr der Normalweg. */
         if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
-        $vorher = $p['config'] . '.vorher';
-        if (is_file($p['config'])) { @copy($p['config'], $vorher); }
-        if (@copy($p['sicherung'], $p['config'])) {
-            @chmod($p['config'], 0600);
-            pw_log('Konfiguration aus der Zweitschrift wiederhergestellt.');
+        /* Was dastand, wird nicht weggeworfen: es kann ein Rest sein, aus
+         * dem sich das Aktionstoken noch von Hand herauslesen laesst. Rechte
+         * 0600, denn genau deshalb hebt man ihn auf. Nur bei Bedarf kopiert -
+         * sonst schriebe jeder Seitenaufbau die Datei neu, solange die
+         * Konfiguration kaputt ist. */
+        $kaputt = $p['config'] . '.kaputt';
+        if (pw_datei_hat_text($p['config'])
+            && (!is_file($kaputt)
+                || (string) @file_get_contents($kaputt)
+                   !== (string) @file_get_contents($p['config']))) {
+            if (@copy($p['config'], $kaputt)) { @chmod($kaputt, 0600); }
         }
-        if (is_file($vorher)) { @unlink($vorher); }
+        /* Geheilt wird NUR aus einer Zweitschrift, die selbst Inhalt traegt.
+         * Ein Stand ohne Inhalt darf keinen anderen ersetzen - in keine der
+         * beiden Richtungen. */
+        if (pw_config_hat_inhalt(pw_inhalt_oder_null($p['sicherung']))
+            && @copy($p['sicherung'], $p['config'])) {
+            @chmod($p['config'], 0600);
+            pw_log('Die Konfiguration trug kein Aktionstoken und wurde aus der '
+                 . 'Zweitschrift wiederhergestellt: ' . $p['sicherung']
+                 . (is_file($kaputt)
+                    ? ' (der vorherige Inhalt liegt unter ' . $kaputt . ')' : '') . '.');
+        }
     }
     /* Gewandert wird bei JEDEM Lesen - nicht nur beim Schreiben. Sonst
      * haenge die Form davon ab, ob zufaellig einmal gespeichert wurde. */
@@ -728,12 +866,18 @@ function pw_config_speichern($cfg)
         if (!pw_wert_taugt($v)) { return false; }
     }
     if (!pw_json_schreiben($p['config'], $cfg, 0600)) { return false; }
-    if (@copy($p['config'], $p['sicherung'])) {
-        /* Die Zweitschrift traegt dasselbe Geheimnis wie die Konfiguration
-         * und bekommt deshalb dieselben Rechte. Bis 0.9.7 entstand sie durch
-         * copy() mit den Vorgaberechten des Systems - ueblicherweise 0644. */
-        @chmod($p['sicherung'], 0600);
-    }
+    /* Die Zweitschrift traegt dasselbe Geheimnis wie die Konfiguration und
+     * bekommt deshalb dieselben Rechte. Bis 0.9.7 entstand sie durch copy()
+     * mit den Vorgaberechten des Systems - ueblicherweise 0644.
+     *
+     * Und sie wird NICHT erneuert, wenn der neue Stand das Aktionstoken
+     * nicht traegt, das dort steht. Bis 1.0.2 war das eine unbedingte Kopie:
+     * ein einziger Aufruf von pw_cfg_vervollstaendigen() mit einer nicht
+     * lesbaren Konfiguration hat damit den einzigen Rueckweg ueberschrieben
+     * (gemessen 18.09.2026, Fall wache). Gespeichert wird trotzdem - nur der
+     * Rueckweg bleibt stehen, und das Protokoll sagt es. */
+    pw_zweitschrift_ziehen($p['config'], $p['sicherung'], (array) $cfg,
+                           array('aktionstoken'), 0600);
     return true;
 }
 
@@ -750,6 +894,17 @@ function pw_config_speichern($cfg)
 function pw_cfg_vervollstaendigen()
 {
     $p = pw_paths();
+    /* ZUERST die Selbstheilung anstossen. Diese Funktion liest die Datei
+     * unmittelbar - sie muss das tun, denn nur die rohe Datei sagt, welcher
+     * Schluessel FEHLT und welcher auf seinem Vorgabewert steht. Bis 1.0.2
+     * ging sie damit an pw_config() und seiner Heilung vorbei: im
+     * Aktualisierungsfall (Datei da, Inhalt nur ein leeres Objekt - der
+     * Zustand jeder bestehenden Anlage nach einem Upgrade) hielt sie alle
+     * Schluessel fuer fehlend und schrieb die Werksvorgaben, samt frisch
+     * gewuerfeltem Token, ueber Konfiguration UND Zweitschrift. Gemessen am
+     * 18.09.2026, Fall leer. Der Aufruf hier ist keine Zierde: ohne ihn ist
+     * die Heilung auf dem Weg ueber die Oberflaeche wirkungslos. */
+    pw_config();
     $roh = pw_json_lesen($p['config']);
     $fehlten = array();
     $fremd = array();
@@ -785,9 +940,19 @@ function pw_cfg_vervollstaendigen()
             }
         }
     }
+    /* Geschrieben wird nur ueber eine Datei, die entweder lesbar ist oder
+     * nachweislich nichts traegt. Eine unlesbare Datei, fuer die es keine
+     * Zweitschrift gibt, wird NICHT mit den Werksvorgaben ueberschrieben -
+     * sie bleibt liegen, und daneben liegt ihr Inhalt als .kaputt. */
     if ($fehlten && is_file($p['config'])) {
-        if (pw_config_speichern($cfg)) {
-            pw_log('Konfiguration vervollstaendigt: ' . implode(', ', $fehlten));
+        if (pw_inhalt_oder_null($p['config']) !== null
+            || !pw_datei_hat_text($p['config'])) {
+            if (pw_config_speichern($cfg)) {
+                pw_log('Konfiguration vervollstaendigt: ' . implode(', ', $fehlten));
+            }
+        } else {
+            pw_log('Die Konfiguration ist nicht lesbar und wurde NICHT '
+                 . 'vervollstaendigt: ' . $p['config']);
         }
     }
     return array($cfg, $fehlten, $fremd);
@@ -3301,6 +3466,25 @@ function pw_signal($pid, $nr)
     $pid = (int) $pid;
     $nr = (int) $nr;
     if ($pid <= 1) { return false; }
+    /* GEPRUEFT WIRD VOR JEDEM SIGNAL, nicht nur vor dem ersten.
+     *
+     * Prozessnummern werden wiederverwendet. Liegt eine alte PID-Datei
+     * herum und traegt ihre Zahl inzwischen einen fremden Vorgang, beendete
+     * das Signal genau den. In WSL gemessen (18.09.2026,
+     * Pruefung-Pumpenwacht-1.0.2, Fall fremd_preupgrade): ein Koeder
+     * "sleep 600", dessen Nummer in dienst.pid stand, war nach
+     * preupgrade.sh tot. Und im Fall fremd_hart, wo der Koeder das erste
+     * Signal nicht beachtet, half eine Pruefung vor dem ERSTEN Signal
+     * nichts - das harte kam ungeprueft hinterher.
+     *
+     * Die Pruefung steht in dieser Funktion und nicht bei ihren Aufrufern:
+     * einen Aufrufer kann man beim Erweitern vergessen, den einen Ausgang
+     * nicht (dieselbe Ueberlegung wie beim Wachposten in index.php). */
+    if (!pw_ist_dienst($pid)) {
+        pw_log('Signal ' . $nr . ' an ' . $pid . ' NICHT geschickt: die Nummer '
+             . 'gehoert keinem Zuhoerer dieses Plugins.');
+        return false;
+    }
     if (function_exists('posix_kill')) { return @posix_kill($pid, $nr); }
     if (function_exists('exec')) {
         @exec('kill -' . $nr . ' ' . $pid . ' 2>/dev/null');
@@ -3325,18 +3509,130 @@ function pw_dienst_bericht()
     return is_array($d) && isset($d['ts']) ? $d : array();
 }
 
-/** Laeuft der Zuhoerer? Gemessen an der PID-Datei UND am Prozess. */
-function pw_dienst_pid()
+/** Der Pfad des Zuhoerers, so wie der Installer ihn ablegt. */
+function pw_dienst_pfad()
 {
     $p = pw_paths();
+    return $p['home'] . '/bin/plugins/' . $p['plugin'] . '/pw_dienst.php';
+}
+
+/**
+ * Die Benutzernummern, deren Prozesse als eigener Zuhoerer gelten.
+ *
+ * Der Minutentakt laeuft als loxberry (Regeln/06), die Hakenskripte als
+ * root. Die Nummer kommt aus /etc/passwd und nicht aus posix_getpwnam():
+ * die posix-Erweiterung ist auf einem LoxBerry nicht zugesichert und steht
+ * nicht in dpkg/apt. Dazu die eigene Nummer - was dieser Prozess selbst
+ * gestartet hat, gehoert ihm.
+ *
+ * is_readable() VOR dem Lesen, nicht nur ein @ davor: der Pruefstand
+ * rendert die Oberflaeche auch unter Windows, dort gibt es weder
+ * /etc/passwd noch /proc, und ein eigener Fehleraufnehmer sieht die
+ * Meldung auch hinter dem @.
+ */
+function pw_dienst_uids()
+{
+    static $u = null;
+    if ($u !== null) { return $u; }
+    $u = array();
+    $eigen = @getmyuid();
+    if ($eigen !== false) { $u[] = (int) $eigen; }
+    $zeilen = is_readable('/etc/passwd')
+        ? @file('/etc/passwd', FILE_IGNORE_NEW_LINES) : false;
+    if (is_array($zeilen)) {
+        foreach ($zeilen as $z) {
+            $f = explode(':', $z);
+            if (isset($f[2]) && $f[0] === 'loxberry') { $u[] = (int) $f[2]; break; }
+        }
+    }
+    $u = array_values(array_unique($u));
+    return $u;
+}
+
+/**
+ * Ist diese Nummer ein Zuhoerer DIESES Plugins? Argumentweise.
+ *
+ * Ein Treffer hat GENAU zwei Argumente: einen php-Interpreter und den vollen
+ * Dienstpfad dieses Plugin-Ordners. Dazu gehoert er dem eigenen Benutzer
+ * oder loxberry.
+ *
+ * Damit trifft die Erkennung nicht mehr: einen Editor mit der Datei offen,
+ * eine Suche, in deren Befehlszeile der Pfad als Muster steht, den eigenen
+ * Aufruf "php pw_dienst.php stop" (drei Argumente), den Selbsttest mit
+ * --selbsttest, den Zuhoerer eines zweiten Plugin-Ordners - und vor allem
+ * keinen beliebigen fremden Vorgang, dessen Nummer zufaellig in der
+ * PID-Datei steht. Bis 1.0.2 fragte diese Stelle nur, OB die Nummer lebt.
+ *
+ * Bauart: APC-UPS 1.2.11 apc_ist_dienst(), Chromecast4lox 1.3.11
+ * cc_dienst_pids(), Midea2Lox 4.5.7.
+ */
+function pw_ist_dienst($pid)
+{
+    $pid = (int) $pid;
+    if ($pid <= 1) { return false; }
+    $datei = '/proc/' . $pid . '/cmdline';
+    $roh = is_readable($datei) ? (string) @file_get_contents($datei) : '';
+    if ($roh === '') { return false; }
+    $args = explode("\0", rtrim($roh, "\0"));
+    if (count($args) !== 2) { return false; }
+    if ($args[1] !== pw_dienst_pfad()) { return false; }
+    /* php, php7.4, php8.4 - der Minutentakt ruft ihn ausdruecklich ueber
+     * "php" auf, damit ein verlorenes Ausfuehrungsrecht nicht lautlos
+     * durchfaellt. In argv[0] steht dann genau das, was dort aufgerufen
+     * wurde, nicht der aufgeloeste Pfad. */
+    if (!preg_match('/^php[0-9.]*$/', basename($args[0]))) { return false; }
+    $besitzer = @fileowner('/proc/' . $pid);
+    if ($besitzer === false) { return false; }
+    return in_array((int) $besitzer, pw_dienst_uids(), true);
+}
+
+/**
+ * ALLE Zuhoerer dieses Plugins - nicht der erste.
+ *
+ * Es kann mehr als einen geben: raeumt der Installer beim Upgrade
+ * data/plugins/<ordner> ab (purge_installation, Regeln/06), verschwindet die
+ * Sperrdatei unter dem laufenden Zuhoerer, und der naechste Minutentakt
+ * startet einen zweiten. In WSL gemessen (18.09.2026, Fall zwei): "stop"
+ * beendete bis 1.0.2 nur die Nummer aus der PID-Datei, der andere blieb
+ * stehen und horchte weiter.
+ *
+ * Rueckgabe: aufsteigend sortierte Liste von Prozessnummern.
+ */
+function pw_dienst_pids()
+{
+    $aus = array();
+    if (!is_dir('/proc')) { return $aus; }
+    $d = @opendir('/proc');
+    if ($d === false) { return $aus; }
+    while (($e = readdir($d)) !== false) {
+        if (!preg_match('/^[0-9]+$/', $e)) { continue; }
+        if (pw_ist_dienst((int) $e)) { $aus[] = (int) $e; }
+    }
+    closedir($d);
+    sort($aus);
+    return $aus;
+}
+
+/**
+ * Laeuft der Zuhoerer? Rueckgabe: PID oder 0.
+ *
+ * Die PID-Datei bleibt die erste Frage - steht ihre Nummer unter den
+ * Treffern, ist sie die Antwort. Sie ist aber nicht mehr die einzige
+ * Quelle: ohne sie fand der Waechter im Minutentakt bis 1.0.2 keinen
+ * laufenden Zuhoerer und startete einen zweiten (gemessen 18.09.2026,
+ * Fall status).
+ */
+function pw_dienst_pid()
+{
+    $pids = pw_dienst_pids();
+    if (!$pids) { return 0; }
+    $p = pw_paths();
     $datei = $p['datadir'] . '/dienst.pid';
-    if (!is_file($datei)) { return 0; }
-    $pid = (int) trim((string) @file_get_contents($datei));
-    if ($pid <= 0) { return 0; }
-    /* Ein Eintrag in der PID-Datei ist eine Behauptung, kein Befund - der
-     * Prozess kann laengst tot sein. Nachgesehen wird in /proc. */
-    if (is_dir('/proc/' . $pid)) { return $pid; }
-    return 0;
+    if (is_file($datei)) {
+        $eingetragen = (int) trim((string) @file_get_contents($datei));
+        if (in_array($eingetragen, $pids, true)) { return $eingetragen; }
+    }
+    return $pids[0];
 }
 
 /** Das Lebenszeichen des Zuhoerers: wann hat er zuletzt etwas getan? */

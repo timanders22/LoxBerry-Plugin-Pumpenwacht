@@ -6,7 +6,97 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.1 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.2 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+
+---
+
+## Behoben in 1.0.2 — fremde Prozesse und das verlorene Aktionstoken
+
+Zwei gemessene Befunde aus dem Bestandslauf vom 18.09.2026. Beide sind in
+WSL/Ubuntu (PHP 8.3.6) nachgestellt, jede Korrektur ist einzeln
+zurückgebaut worden und die Prüfung wurde dann wieder rot. **Nicht am
+Gerät gemessen.**
+
+### 1. Der Zuhörer wurde an seiner Prozessnummer erkannt, nicht an seiner Befehlszeile
+
+`pw_dienst_pid()` fragte nur, **ob** die Nummer aus `dienst.pid` lebt
+(`is_dir('/proc/<nr>')`) — nicht, **wem** sie gehört. Prozessnummern werden
+wiederverwendet. Blieb eine alte PID-Datei liegen und trug ihre Zahl
+inzwischen einen fremden Vorgang, beendete `preupgrade.sh` bei jeder
+Aktualisierung genau den; dasselbe beim Deinstallieren. Beide Hakenskripte
+laufen als root, und niemand drückt dafür einen Knopf.
+
+Gemessen (Köder `sleep 600`, seine Nummer in `dienst.pid`):
+
+```
+vorher:  Der Zuhoerer wurde beendet (PID 395).   -> Koeder IST TOT
+nachher: <INFO> Der Zuhoerer laeuft nicht.       -> Koeder lebt
+```
+
+Jetzt wird **argumentweise** erkannt (`pw_ist_dienst()`): genau zwei
+Argumente, `argv[0]` ein php-Interpreter, `argv[1]` genau der Dienstpfad
+dieses Plugin-Ordners, und der Prozess gehört dem eigenen Benutzer oder
+`loxberry`. Ein Editor mit der Datei offen, eine Suche mit dem Pfad im
+Muster, der eigene Aufruf `php pw_dienst.php stop` und der Zuhörer eines
+zweiten Plugin-Ordners werden damit nie getroffen. Bauart aus APC-UPS NG
+1.2.11, Midea2Lox 4.5.7 und Chromecast4lox 1.3.11.
+
+Drei Folgen davon:
+
+* **Geprüft wird vor jedem Signal**, auch vor dem harten. Die Prüfung steht
+  in `pw_signal()` selbst — einen Aufrufer kann man beim Erweitern
+  vergessen, den einen Ausgang nicht. Ein Köder, der SIGTERM nicht beachtet,
+  überlebt jetzt auch das SIGKILL, das fünf Sekunden später kam.
+* **`stop` beendet alle eigenen Zuhörer, nicht den einen aus der PID-Datei.**
+  Mehr als einer kommt vor: räumt der Installer beim Upgrade
+  `data/plugins/<ordner>` ab, verschwindet die Sperrdatei unter dem
+  laufenden Zuhörer und der nächste Minutentakt startet einen zweiten.
+  Gemessen: vorher blieb einer stehen und horchte weiter.
+* **Der Wächter im Minutentakt findet den Zuhörer auch ohne PID-Datei.**
+  Vorher meldete `status` dann „läuft nicht“, und eine Minute später liefen
+  zwei.
+
+Die beiden Hakenskripte melden außerdem, **was** geschehen ist, statt eine
+Wirkung zu behaupten: `stop` gibt auch dann 0 zurück, wenn gar nichts lief.
+
+### 2. Die Selbstheilung entschied nach Form statt nach Inhalt
+
+Geheilt wurde, wenn die Konfigurationsdatei leer war oder nur aus einem
+leeren Objekt bestand. Eine **abgeschnittene** Datei ist weder das eine noch
+das andere: sie kam nie in diesen Zweig, `json_decode` gab `null`, die
+Oberfläche hielt die Konfiguration für neu, würfelte ein neues Aktionstoken
+und schrieb es über die Zweitschrift. Danach beantwortet der Endpunkt jede
+Loxone-Adresse mit dem alten Token mit HTTP 403, und zurückrechnen lässt sich
+das Token nicht.
+
+Schlimmer: `pw_cfg_vervollstaendigen()` las die Datei **an `pw_config()`
+vorbei** und schrieb die Werksvorgaben zurück. Damit ging das Token schon im
+Fall `{}` verloren — dem Aktualisierungsfall, den jede bestehende Anlage
+nach einem Upgrade durchläuft und eine Neuinstallation nie. Aus drei Pumpen
+wurde dabei eine.
+
+Jetzt gilt:
+
+* **Inhalt** heißt: lesbares JSON-Objekt **und** vorhandenes Aktionstoken
+  (`pw_inhalt_oder_null()`, `pw_config_hat_inhalt()`).
+* Geheilt wird nur aus einer Zweitschrift, die selbst Inhalt trägt.
+* Die Zweitschrift wird nie mit einem Stand ohne Aktionstoken überschrieben
+  (`pw_zweitschrift_ziehen()`); gespeichert wird trotzdem, nur der Rückweg
+  bleibt stehen, und das Protokoll sagt es.
+* Der verdrängte Stand liegt als `pumpenwacht.json.kaputt` (0600) daneben —
+  auch dann, wenn es keine Zweitschrift gibt und gar nicht geheilt werden
+  kann.
+* `pw_cfg_vervollstaendigen()` stößt die Heilung an, bevor es liest, und
+  überschreibt eine unlesbare Datei nicht mehr mit den Vorgaben.
+
+Bauart aus Sprachsteuerung 0.11.8 und Intercom 2.2.11.
+
+### Der Prüfstand dazu
+
+`Pruefung-Pumpenwacht-1.0.2/messe_pumpenwacht.sh` — vierzehn Fälle, 57
+Prüfzeilen, vorher 25 rot, nachher 0. Er liest den Plugin-Ordner nur und
+arbeitet in einem Wegwerfbaum unter `/tmp`. Kontrollfall `heil`: wird er rot,
+misst der Prüfstand sich selbst.
 
 ---
 

@@ -406,45 +406,67 @@ function pw_selbsttest_dienst($cfg)
 /* ---------------- stop / status ---------------- */
 
 if ($pw_hat('stop')) {
-    $pid = pw_dienst_pid();
-    if ($pid <= 0) {
+    /* ALLE eigenen Zuhoerer, nicht einer.
+     *
+     * Bis 1.0.2 wurde genau die eine Nummer aus der PID-Datei beendet. Das
+     * war in zwei Richtungen falsch: die Nummer konnte einem FREMDEN Vorgang
+     * gehoeren (gemessen 18.09.2026, Fall fremd_preupgrade - ein Koeder
+     * "sleep 600" war nach preupgrade.sh tot), und ein zweiter eigener
+     * Zuhoerer ohne Eintrag in der Datei blieb stehen (Fall zwei).
+     * pw_dienst_pids() findet beide Lagen argumentweise.
+     *
+     * Die WIRKUNG wird gemessen, nicht der Rueckgabewert des Signals; und
+     * pw_signal() prueft vor JEDEM Signal noch einmal selbst, auch vor dem
+     * harten - zwischen der Suche und dem Signal koennte ein Prozess
+     * verschwinden und seine Nummer neu vergeben werden. */
+    $pids = pw_dienst_pids();
+    if (!$pids) {
         echo "Der Zuhoerer laeuft nicht.\n";
+        /* Eine PID-Datei, die auf nichts Eigenes zeigt, ist ein Rest aus
+         * einem Absturz und wird abgeraeumt - sonst zeigt die Oberflaeche
+         * beim naechsten Mal wieder auf sie. */
+        @unlink($pw_pidfile);
         exit(0);
     }
-    /* Erst hoeflich, dann bestimmt - und die WIRKUNG wird gemessen, nicht
-     * der Rueckgabewert des Signals.
-     *
-     * posix_kill() steckt in einer Erweiterung, die nicht zugesichert ist,
-     * und sie steht NICHT in dpkg/apt. Fehlt sie, ist das kein abfangbarer
-     * Fehler, sondern ein toedlicher - dieselbe Klasse wie socket_create()
-     * in 0.9.7. Also gefragt, nicht gehofft. */
-    pw_signal($pid, 15);
+    foreach ($pids as $pw_z) { pw_signal($pw_z, 15); }
     for ($i = 0; $i < 50; $i++) {
         usleep(100000);
-        if (pw_dienst_pid() <= 0) {
-            echo "Der Zuhoerer wurde beendet (PID " . $pid . ").\n";
+        if (!pw_dienst_pids()) {
+            echo "Der Zuhoerer wurde beendet (PID " . implode(', ', $pids) . ").\n";
             @unlink($pw_pidfile);
             exit(0);
         }
     }
-    pw_signal($pid, 9);
+    /* Hart beendet wird NUR, was jetzt noch als eigener Zuhoerer dasteht -
+     * neu gesucht, nicht angenommen. */
+    $rest = pw_dienst_pids();
+    foreach ($rest as $pw_z) { pw_signal($pw_z, 9); }
     usleep(300000);
-    $noch = pw_dienst_pid();
+    $noch = pw_dienst_pids();
     @unlink($pw_pidfile);
-    if ($noch > 0) {
-        fwrite(STDERR, "Der Zuhoerer liess sich nicht beenden (PID " . $noch . ").\n");
+    if ($noch) {
+        fwrite(STDERR, "Der Zuhoerer liess sich nicht beenden (PID "
+               . implode(', ', $noch) . ").\n");
         exit(1);
     }
-    echo "Der Zuhoerer wurde hart beendet (PID " . $pid . ").\n";
+    echo "Der Zuhoerer wurde hart beendet (PID " . implode(', ', $pids) . ").\n";
     exit(0);
 }
 
 if ($pw_hat('status')) {
+    /* Diese Zeile ist der Waechter im Minutentakt: gibt sie 0 zurueck,
+     * startet cron.01min keinen neuen Zuhoerer. Beide Richtungen zaehlen -
+     * eine fremde Nummer in der PID-Datei darf nicht als laufender Dienst
+     * gelten, und ein laufender Dienst OHNE PID-Datei muss gefunden werden,
+     * sonst laufen hinterher zwei. Beides gemessen 18.09.2026, Fall status. */
+    $pids = pw_dienst_pids();
     $pid = pw_dienst_pid();
     $alter = pw_dienst_alter();
     if ($pid > 0) {
-        printf("laeuft, PID %d, letztes Lebenszeichen vor %s\n",
-               $pid, $alter >= 0 ? $alter . ' s' : 'unbekannt');
+        printf("laeuft, PID %d%s, letztes Lebenszeichen vor %s\n",
+               $pid,
+               count($pids) > 1 ? ' (und ' . (count($pids) - 1) . ' weitere)' : '',
+               $alter >= 0 ? $alter . ' s' : 'unbekannt');
         exit(0);
     }
     echo "laeuft nicht\n";

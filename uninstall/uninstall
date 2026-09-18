@@ -30,10 +30,20 @@ fi
 # Erst den Zuhoerer anhalten - sonst laeuft ein Prozess weiter, dessen
 # Plugin es nicht mehr gibt, und schreibt in Ordner, die gerade
 # verschwinden.
+# Gemeldet wird, WAS der Zuhoerer gesagt hat, nicht der Rueckgabewert von
+# "stop": der ist auch dann 0, wenn gar nichts lief. Bis 1.0.2 stand deshalb
+# "<OK> MQTT-Zuhoerer angehalten." auch dann im Installationsprotokoll, wenn
+# es nichts anzuhalten gab - und im gemessenen Fall (18.09.2026, Klasse F)
+# sogar dann, wenn ein FREMDER Vorgang beendet worden war.
 DIENST="$BASE/bin/plugins/$PFOLDER/pw_dienst.php"
 if [ -f "$DIENST" ]; then
-    LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" php "$DIENST" stop 2>/dev/null \
-        && echo "<OK> MQTT-Zuhoerer angehalten."
+    AUSGABE=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" php "$DIENST" stop 2>/dev/null)
+    if [ -n "$AUSGABE" ]; then
+        echo "$AUSGABE" | sed 's/^/<INFO> /'
+    else
+        echo "<INFO> Der Zuhoerer liess sich nicht befragen (php fehlt oder"
+        echo "<INFO> pw_lib.php ist nicht auffindbar) - es wurde nichts beendet."
+    fi
 fi
 
 BK="$BASE/config/plugins/$PFOLDER.backup.json"

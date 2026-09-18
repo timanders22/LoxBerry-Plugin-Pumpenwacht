@@ -46,10 +46,20 @@ fi
 # Prozess, dessen Quelltext unter ihm ausgetauscht wird, ist eine Wette;
 # der Minutentakt startet ihn hinterher ohnehin neu. Gibt es ihn nicht
 # (Quelle steht auf Loxone), ist das kein Fehler.
+# Gemeldet wird, WAS der Zuhoerer gesagt hat, nicht der Rueckgabewert von
+# "stop": der ist auch dann 0, wenn gar nichts lief. Bis 1.0.2 stand deshalb
+# "<OK> MQTT-Zuhoerer angehalten." auch dann im Installationsprotokoll, wenn
+# es nichts anzuhalten gab - und im gemessenen Fall (18.09.2026, Klasse F)
+# sogar dann, wenn ein FREMDER Vorgang beendet worden war.
 DIENST="$BASE/bin/plugins/$PFOLDER/pw_dienst.php"
 if [ -f "$DIENST" ]; then
-    LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" php "$DIENST" stop 2>/dev/null \
-        && echo "<OK> MQTT-Zuhoerer angehalten."
+    AUSGABE=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" php "$DIENST" stop 2>/dev/null)
+    if [ -n "$AUSGABE" ]; then
+        echo "$AUSGABE" | sed 's/^/<INFO> /'
+    else
+        echo "<INFO> Der Zuhoerer liess sich nicht befragen (php fehlt oder"
+        echo "<INFO> pw_lib.php ist nicht auffindbar) - es wurde nichts beendet."
+    fi
 fi
 
 echo "<OK> preupgrade abgeschlossen."
