@@ -58,6 +58,16 @@ fi
 # gehoeren zu einem Plugin, das es nicht mehr gibt.
 rm -rf "$BASE/data/plugins/$PFOLDER" 2>/dev/null
 
+# Die Marke "Aktualisierung laeuft" liegt NEBEN dem Datenordner - das rm -rf
+# darueber trifft den Nachbarn mit dem Punkt nicht. Bliebe sie liegen, wuerde
+# der Minutentakt einer spaeteren Neuinstallation bis zu einer Stunde lang
+# nichts tun, und niemand faende den Grund.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+if [ -f "$MARKE" ]; then
+    rm -f "$MARKE" && echo "<OK> Marke einer abgebrochenen Aktualisierung entfernt ($MARKE)."
+    [ -e "$MARKE" ] && echo "<FAIL> Die Marke liess sich nicht entfernen: $MARKE"
+fi
+
 echo "<INFO> Das Protokoll bleibt stehen: $BASE/log/plugins/$PFOLDER"
 echo "<INFO> In Loxone bleiben die virtuellen Ein- und Ausgaenge stehen -"
 echo "<INFO> sie muessen dort von Hand entfernt werden."

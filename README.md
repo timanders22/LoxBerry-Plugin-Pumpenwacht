@@ -6,7 +6,107 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.2 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.3 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+
+---
+
+## Neu in 1.0.3 — der Minutentakt hält während einer Aktualisierung still
+
+Der Installer legt die Cron-Datei rund eine Minute **vor** dem letzten
+Hakenskript neu an. Am Gerät gemessen (08.09.2026, an einer anderen Linie,
+Regeln/06): `preupgrade` 03:31:30, Cron-Datei neu 03:31:32, `postinstall`
+erst 03:32:24. In dieser Lücke hat `purge_installation` den Datenordner und
+den Konfigordner bereits gelöscht — die neuen Dateien liegen aber schon da.
+
+Bis 1.0.2 fragte `cron/cron.01min` nur, ob `bin/pw_dienst.php` vorhanden ist.
+In der Lücke lautete die Antwort **ja**.
+
+### Was in der Lücke wirklich geschah — gemessen, nicht vermutet
+
+In WSL/Ubuntu (PHP 8.3.6) nachgestellt: `preupgrade.sh` → `purge_installation`
+→ neue Dateien und Cron-Datei → **ein Minutentakt** → `postinstall.sh` →
+`postupgrade.sh`. Gegen 1.0.2:
+
+| gemessen | 1.0.2 | 1.0.3 |
+|---|---|---|
+| Zuhörer nach dem Takt in der Lücke | **1** | 0 |
+| Datenordner nach dem Takt | `dienst.lock`, `dienst.pid`, `stand.lock`, `stand.json`, Ordner der Broker-Optionsdatei | leer |
+| Konfiguration in der Lücke aus der Zweitschrift geheilt | ja | nein |
+| Aktionstoken nach dem Upgrade | vorhanden | vorhanden |
+| drei Pumpen nach dem Upgrade | alle drei | alle drei |
+
+**Verloren ging dabei nichts.** Die Selbstheilung greift auf dieselbe
+Zweitschrift zu, aus der auch `postinstall.sh` zurückholt — anders als bei
+Intercom, wo in der Lücke Stationen und Aktionstoken verlorengingen. Die
+Marke ist in dieser Linie also **Vorsorge**: sie schließt das Fenster, in dem
+ein Zuhörer mit halb abgeräumter Umgebung anläuft, den das letzte
+Hakenskript danach nicht kennt und dessen PID-Datei gerade gelöscht wurde.
+
+### Die Marke
+
+* `preupgrade.sh` legt als **Erstes** `data/plugins/<ordner>.upgrade_laeuft`
+  mit der Unixzeit an — **neben** dem Datenordner, weil
+  `purge_installation` den Ordner selbst löscht.
+* `cron/cron.01min` tut nichts, solange sie gilt: weder den Zuhörer starten
+  noch rechnen. Sie gilt, solange sie jünger als eine Stunde ist; älter,
+  unlesbar oder aus der Zukunft gilt sie nicht — eine abgebrochene
+  Installation darf den Wächter nicht für immer stilllegen.
+* **Ohne lesbare Uhr fällt die Prüfung geschlossen aus.** Liefert `date`
+  nichts, gilt die Marke. Gemessen mit einer stummen `date`-Attrappe: ohne
+  diese Zeile startete der Takt mitten in der Aktualisierung.
+* `postupgrade.sh` ist bei dieser Linie das **letzte** Hakenskript — ein
+  `postroot.sh` gibt es nicht. Es beendet einen Zuhörer, der die Marke um
+  Sekunden verpasst hat (argumentweise über `/proc/<pid>/cmdline`, auch ohne
+  PID-Datei), startet dann über den Minutentakt selbst und entfernt die
+  Marke **danach**.
+* `uninstall/uninstall` räumt sie weg.
+
+### Warum die Marke erst nach dem Start fällt
+
+Zwischen dem Entfernen und dem Augenblick, in dem der neue Zuhörer dasteht,
+sieht ein Takt weder die Marke noch einen laufenden Zuhörer. In WSL mit 200
+Takten im Abstand von 0,02 s neben den Hakenskripten gemessen, je fünf Läufe:
+
+| Reihenfolge | Zuhörer am Ende |
+|---|---|
+| Start, dann Marke weg | 5 von 5 Läufen genau einer |
+| Marke weg, dann Start | 5 von 5 Läufen genau einer |
+| Start, dann Marke weg — **ohne die Dateisperre des Zuhörers** | 5 von 5 Läufen genau einer |
+| Marke weg, dann Start — **ohne die Dateisperre** | **4 von 5 Läufen zwei** |
+
+Bei dieser Linie hält also die `flock`-Sperre auf `dienst.lock` das Fenster
+zu, nicht die Reihenfolge. Sie wird trotzdem so gebaut: die Sperrdatei
+entsteht in der Lücke neu, und ein Schutz, der an einer zweiten Voraussetzung
+hängt, ist einer weniger. Bei Chromecast4lox 1.3.10, das keine solche Sperre
+hat, ergab die umgekehrte Reihenfolge vier Dienste.
+
+### Die Oberfläche wird **nicht** gesperrt
+
+Ob bei liegender Marke gesperrt wird, ist nach Regeln/06 eine Messung, keine
+Regel. Gemessen: ein Seitenaufruf **und** ein angenommenes Speichern in der
+Lücke lassen Aktionstoken, alle drei Pumpen und die Zweitschrift unverändert
+— vorher wie nachher. Eine Sperre ohne gemessenen Schaden nimmt dem Anwender
+nur die Seite.
+
+### Der Prüfstand dazu
+
+`Pruefung-Pumpenwacht-1.0.3/messe_marke.sh` — acht Fälle, 40 Prüfzeilen:
+gegen den Stand vor dieser Fassung **8 rot**, danach **0**, zweimal gelaufen
+und im Urteil Zeile für Zeile gleich. Dazu `ordnung_messen.sh` für die
+Reihenfolge und `eichen_marke.sh` für die Eichung: jede Korrektur einzeln
+zurückgebaut, jede wird rot. Die 57 Prüfzeilen von 1.0.2 bleiben grün.
+**Nicht am Gerät gemessen.**
+
+### Offen, nicht in dieser Fassung behoben
+
+Dabei ist ein **zweiter Befund** aufgefallen, der nichts mit der Lücke zu tun
+hat: die **Tagesbilanz überlebt kein Update.** `tage.json` liegt in
+`data/plugins/<ordner>/`, und `purge_installation` räumt diesen Ordner bei
+jedem Upgrade ab — gerettet wird sie nirgends. Gemessen: drei Tage vorher,
+die Datei danach nicht mehr vorhanden. Der Satz im Kopf von `postupgrade.sh`,
+sie *bleibe*, trifft nur auf das `rm -f` in derselben Datei zu, nicht auf den
+Installer. Die Rettung gehört nach `preupgrade.sh`, **neben** den Datenordner
+— sie ist eine eigene Änderung mit eigener Messung und steht noch aus.
 
 ---
 
@@ -422,7 +522,8 @@ Quittungspflicht durch erfundene Normalwerte aufheben.
 
 ```
 bin/            der Minutentakt (pw_takt.php) und der MQTT-Zuhörer (pw_dienst.php)
-cron/           cron.01min — Wächter für den Zuhörer, danach der Takt
+cron/           cron.01min — hält bei liegender Upgrade-Marke ganz still,
+                sonst: Wächter für den Zuhörer, danach der Takt
 dpkg/apt        mosquitto-clients (nur für den MQTT-Weg)
 templates/      Sprachdateien und Hilfe
 webfrontend/    html = Rechenkern, Bibliothek und Endpunkt; htmlauth = Oberfläche
@@ -446,6 +547,7 @@ config/plugins/<ordner>/pumpenwacht.json   die Konfiguration (0600)
 config/plugins/<ordner>.backup.json        die Zweitschrift (0600)
 data/plugins/<ordner>/stand.json           der laufende Zustand
 data/plugins/<ordner>/tage.json            die Tagesbilanz, 60 Tage
+data/plugins/<ordner>.upgrade_laeuft       nur während einer Aktualisierung
 log/plugins/<ordner>/pumpenwacht.log       das Protokoll
 ```
 

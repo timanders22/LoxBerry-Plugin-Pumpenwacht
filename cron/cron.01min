@@ -1,7 +1,9 @@
 #!/bin/sh
 # Pumpenwaechter - Minutentakt und Waechter
 #
-# ZWEI AUFGABEN, und die Reihenfolge ist Absicht:
+# ZWEI AUFGABEN, und die Reihenfolge ist Absicht. Vor beiden steht seit
+# 1.0.3 ein Tor: laeuft gerade eine Aktualisierung, geschieht gar nichts
+# (Abschnitt 0 unten).
 #
 # 1. Den MQTT-Zuhoerer nachstarten, falls er stehen sollte. Er laeuft nur,
 #    wenn die Messwertquelle in den Einstellungen auf "MQTT" steht; sonst
@@ -20,6 +22,69 @@
 #
 # Ausdruecklich ueber php aufgerufen: geht bei einem misslungenen Update das
 # Ausfuehrungsrecht verloren, schluege der unmittelbare Aufruf lautlos fehl.
+
+# 0. Laeuft gerade eine Aktualisierung? Dann tut dieser Takt NICHTS - weder
+#    starten noch rechnen.
+#
+#    Der Installer legt die Cron-Datei rund eine Minute VOR dem letzten
+#    Hakenskript neu an (Regeln/06, am Geraet an der Einspeisebremse
+#    gemessen: Cron-Datei 03:31:32, postinstall erst 03:32:24). In dieser
+#    Luecke hat purge_installation den Datenordner und den Konfigordner
+#    bereits geloescht, die neuen Dateien liegen aber schon da. Bis 1.0.2
+#    fragte dieser Takt nur, OB bin/pw_dienst.php vorhanden ist - und die
+#    Antwort lautete in der Luecke "ja".
+#
+#    In WSL nachgestellt (18.09.2026, Pruefung-Pumpenwacht-1.0.3, Fall
+#    luecke, gegen 1.0.2): der Takt startete dort EINEN Zuhoerer, legte
+#    dienst.lock, dienst.pid, stand.lock, stand.json und den Ordner mit der
+#    Broker-Optionsdatei an und heilte die Konfiguration aus der
+#    Zweitschrift. Verloren ging dabei nichts (Aktionstoken und alle drei
+#    Pumpen standen hinterher unveraendert da) - die Marke ist bei dieser
+#    Linie also Vorsorge, nicht die Behebung eines gemessenen Verlusts.
+#    Sie schliesst das Fenster, in dem ein Zuhoerer mit halb abgeraeumter
+#    Umgebung anlaeuft und den das letzte Hakenskript danach nicht kennt.
+#
+#    Die Marke liegt NEBEN dem Datenordner des Plugins und heisst
+#    <ordner>.upgrade_laeuft; purge_installation loescht nur den Ordner
+#    selbst und trifft den Nachbarn mit dem Punkt nicht. preupgrade.sh legt
+#    sie als Erstes an, postupgrade.sh raeumt sie weg.
+#
+#    Sie gilt nur, solange sie juenger als eine Stunde ist: eine
+#    abgebrochene Installation darf den Waechter nicht fuer immer
+#    stilllegen. Unlesbar oder aus der Zukunft gilt sie nicht.
+#
+#    OHNE LESBARE UHR FAELLT DIE PRUEFUNG GESCHLOSSEN AUS. Stuende die
+#    Kommandoersetzung mit date unmittelbar in der Rechnung und lieferte
+#    sie nichts - unter Last kann ein fork scheitern -, rechnete die Schale
+#    mit einer leeren Zeichenkette, das Alter wuerde negativ, die Bedingung
+#    fiele durch, und der Takt startete mitten in der Aktualisierung.
+#    Gemessen an APC-UPS 1.2.11 (Fall waechter_g3o, date als stumme
+#    Attrappe): 1 Prozess statt 0.
+#
+#    PW_START_TROTZ_MARKE=1 setzt nur postupgrade.sh: dort ist die Marke
+#    die eigene, und sie faellt unmittelbar danach.
+#    Der Platzhalter wird zum Datenordner des Plugins. Der abschliessende
+#    Schraegstrich wird abgeschnitten, BEVOR der Punkt angehaengt wird: mit
+#    einem Schraegstrich laege die Marke IM Ordner - und damit genau dort, wo
+#    purge_installation sie loescht. Ob der Installer einen setzt, ist hier
+#    nicht messbar; die Zeile traegt in beiden Faellen.
+PDATA="REPLACELBPDATADIR"
+PDATA=${PDATA%/}
+MARKE="$PDATA.upgrade_laeuft"
+if [ "${PW_START_TROTZ_MARKE:-0}" != "1" ] && [ -f "$MARKE" ]; then
+    SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$SEIT" in ""|*[!0-9]*) SEIT=0 ;; esac
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in ""|*[!0-9]*) JETZT="" ;; esac
+    if [ -z "$JETZT" ]; then
+        exit 0
+    fi
+    ALTER=$(( JETZT - SEIT ))
+    if [ "$ALTER" -ge 0 ] && [ "$ALTER" -lt 3600 ]; then
+        exit 0
+    fi
+fi
+
 LOG="REPLACELBPLOGDIR/pumpenwacht.log"
 # Eigene Datei fuer die Ausgabe des Dauerlaeufers. Bis 0.9.12 ging seine
 # Fehlerausgabe mit 2>>"$LOG" in DAS PROTOKOLL, das auch die Oberflaeche

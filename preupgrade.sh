@@ -29,6 +29,34 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+# ---------- Zuerst die Marke "Aktualisierung laeuft" ----------
+# Sie steht VOR allem anderen, auch vor der Sicherung: der Installer legt die
+# Cron-Datei rund eine Minute vor dem letzten Hakenskript neu an, und faellt
+# ein Minutentakt in diese Luecke, startet er einen Zuhoerer mit halb
+# abgeraeumter Umgebung (Regeln/06; in WSL am 18.09.2026 fuer diese Linie
+# nachgestellt und gemessen: ein Zuhoerer, ein angelegter Datenordner).
+#
+# Sie liegt NEBEN dem Datenordner, nicht darin: purge_installation loescht
+# data/plugins/<ordner>/ und trifft den Nachbarn mit dem Punkt nicht.
+# cron/cron.01min achtet sie, solange sie juenger als eine Stunde ist;
+# postupgrade.sh raeumt sie weg und startet danach selbst.
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+# Die geschweiften Klammern sind kein Zierrat: die Umleitung wird VOR dem
+# "2>/dev/null" ausgewertet. Scheitert sie - fehlender Ordner, volles
+# Dateisystem -, meldet die Schale das selbst, und die Meldung stuende roh im
+# Installationsprotokoll (Regeln/06, dieselbe Falle wie bei "exec 2>>datei").
+{ date +%s > "$MARKE"; } 2>/dev/null
+# Nicht "ist die Datei da", sondern "steht eine Unixzeit darin": eine leere
+# oder halb geschriebene Marke gilt dem Takt als unlesbar und haelt ihn
+# nicht auf - dann soll das hier stehen und nicht "<OK>".
+if grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
+    echo "<OK> Der Minutentakt startet bis zum Ende der Installation nichts."
+else
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - der Minutentakt"
+    echo "<WARNING> kann waehrend der Installation einen Zuhoerer starten."
+fi
+
 CF="$BASE/config/plugins/$PFOLDER/pumpenwacht.json"
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 if [ -f "$CF" ] && [ -s "$CF" ]; then
