@@ -108,12 +108,18 @@ list($pw_voll, $pw_fehlten, $pw_fremd) = pw_cfg_vervollstaendigen();
  * spaeter bekaeme, haette bis dahin auf die erste Pumpe geschrieben. */
 $pw_alle_ids = pw_pumpe_ids($pw_voll);
 $pw_pid = '';
-if (isset($_POST['pumpe'])) {
-    $pw_pid = (string) $_POST['pumpe'];
-} elseif (isset($_GET['pumpe'])) {
-    $pw_pid = (string) $_GET['pumpe'];
+if (isset($_POST['pumpe']) && is_string($_POST['pumpe'])) {
+    $pw_pid = $_POST['pumpe'];
+} elseif (isset($_GET['pumpe']) && is_string($_GET['pumpe'])) {
+    $pw_pid = $_GET['pumpe'];
 }
-if (!in_array($pw_pid, $pw_alle_ids, true)) {
+/* O2 (1.0.4): zurueckgefallen wird nur fuer die ANZEIGE. Ein POST mit
+ * unbekannter Kennung wird unten hinter dem Wachposten abgewiesen. Bis
+ * 1.0.3 entfernte die zweite Absendung von "Pumpe entfernen" (F5, ein
+ * zweiter Tab) die ERSTE Pumpe - im gemessenen Fall die Sumpfpumpe samt
+ * Zustand und Tagesbilanz (Pruefbericht oberflaeche O2). */
+$pw_pid_unbekannt = !in_array($pw_pid, $pw_alle_ids, true);
+if ($pw_pid_unbekannt) {
     $pw_pid = $pw_alle_ids ? $pw_alle_ids[0] : '';
 }
 $pw_cfg = pw_pumpe($pw_voll, $pw_pid);
@@ -174,6 +180,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_POST = array();
         if ($pw_behalten !== null) { $_POST['activetab'] = $pw_behalten; }
     }
+}
+
+/* O2 (1.0.4): ein Formular fuer eine Pumpe, die es nicht (mehr) gibt,
+ * aendert NICHTS - abgewiesen mit Meldung, so wie der Endpunkt es mit
+ * GRUND=PUMPE tut. Ein POST ganz ohne Kennung (aeltere Formulare,
+ * Werkzeuge) gilt weiter der ersten Pumpe - abgewiesen wird die GENANNTE,
+ * die es nicht gibt. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$pw_fehler && $pw_pid_unbekannt && isset($_POST['pumpe'])) {
+    $pw_fehler[] = pw_t('PUMPE.UNBEKANNT');
+    pw_log('Ein Formular fuer eine unbekannte Pumpe wurde abgewiesen - es wurde nichts geaendert.');
+    $pw_behalten = isset($_POST['activetab']) ? $_POST['activetab'] : null;
+    $_POST = array();
+    if ($pw_behalten !== null) { $_POST['activetab'] = $pw_behalten; }
 }
 
 /* Aktiver Reiter. Die Positivliste steht AUSGESCHRIEBEN - so findet
@@ -262,6 +281,15 @@ if ($pw_ist_post && isset($_POST['pw_zurueck'])) {
          * global noch ein Pumpenschluessel ist. Die Sicherung galt dann als
          * angenommen und wurde nicht uebernommen. */
         } elseif (pw_config_speichern($pw_neu)) {
+            /* B9 (1.0.4): Praefixe, die es nach dem Zurueckspielen nicht
+             * mehr gibt, werden abgeraeumt - wie beim Wechsel im Reiter MQTT. */
+            $pw_bleiben = pw_eigene_praefixe($pw_neu);
+            foreach (pw_eigene_praefixe($pw_voll) as $pw_ap) {
+                if (in_array($pw_ap, $pw_bleiben, true)) { continue; }
+                list($pw_am, $pw_af) = pw_ui_praefix_leeren($pw_ap);
+                $pw_meldungen = array_merge($pw_meldungen, $pw_am);
+                $pw_fehler = array_merge($pw_fehler, $pw_af);
+            }
             /* Beide Zahlen nennen, und die uebrigen beim Namen. "1 Werte
              * uebernommen" war bis 0.9.7 woertlich richtig und trotzdem
              * beschwichtigend - es sagte nicht, was mit den anderen
@@ -297,9 +325,29 @@ if ($pw_ist_post && isset($_POST['pumpe_neu'])) {
 
 /* ---------- Pumpe entfernen ---------- */
 if ($pw_ist_post && isset($_POST['pumpe_weg'])) {
-    $pw_erg = pw_pumpe_entfernen($pw_pid);
-    if ($pw_erg === true) {
-        $pw_meldungen[] = sprintf(pw_t('PUMPE.ENTFERNT'), pw_e($pw_pid));
+    /* O3 (1.0.4): nur mit dem Bestaetigungshaken (Regeln/04, "Formregeln
+     * fuer einen loeschenden Knopf"). Bis 1.0.3 entfernte ein einziger
+     * Klick in der Pumpenleiste die Pumpe samt Zustand und Tagesbilanz. */
+    if (!isset($_POST['bestaetigt']) || !is_string($_POST['bestaetigt']) || $_POST['bestaetigt'] !== '1') {
+        $pw_erg = 'haken';
+        $pw_fehler[] = sprintf(pw_t('PUMPE.WEG_HAKEN'), pw_e(pw_pumpe_name($pw_cfg)));
+    } else {
+        $pw_weg_praefix = pw_mqtt_thema($pw_cfg);
+        $pw_weg_name = pw_pumpe_name($pw_cfg);
+        $pw_erg = pw_pumpe_entfernen($pw_pid);
+    }
+    if ($pw_erg === 'haken') {
+        /* nichts geaendert */
+    } elseif ($pw_erg === true) {
+        $pw_meldungen[] = sprintf(pw_t('PUMPE.ENTFERNT'), pw_e($pw_weg_name));
+        /* B9 (1.0.4): ihre retained Themen gehen mit - sonst stuende der
+         * letzte Befund der entfernten Pumpe fuer immer im Broker. Nur,
+         * wenn keine andere Pumpe dasselbe Praefix traegt. */
+        if (!in_array($pw_weg_praefix, pw_eigene_praefixe(pw_config()), true)) {
+            list($pw_am, $pw_af) = pw_ui_praefix_leeren($pw_weg_praefix);
+            $pw_meldungen = array_merge($pw_meldungen, $pw_am);
+            $pw_fehler = array_merge($pw_fehler, $pw_af);
+        }
         /* Die Wahl zeigt jetzt ins Leere. Sie wird bewusst NICHT hier
          * berichtigt, sondern im Anzeigeblock - dort steht die Pruefung
          * ohnehin, und zwei Stellen mit derselben Regel gehen auseinander. */
@@ -319,6 +367,14 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
     $pw_voll = pw_config();
     $pw_neu = pw_pumpe($pw_voll, $pw_pid);
     $pw_beanstandet = array();
+    $pw_beschriftung = array(
+        'name' => 'PUMPE.L_NAME', 'modell' => 'EINST.L_MODELL', 'art' => 'PUMPE.L_ART',
+        'ruht_s' => 'PUMPE.L_RUHT_S', 'quelle' => 'EINST.L_QUELLE',
+        'quelle_topic' => 'EINST.L_QUELLE_TOPIC', 'an_w' => 'EINST.L_AN_W',
+        'trocken_w' => 'EINST.L_TROCKEN_W', 'trocken_s' => 'EINST.L_TROCKEN_S',
+        'ueberlast_w' => 'EINST.L_UEBERLAST_W', 'dauerlauf_s' => 'EINST.L_DAUERLAUF_S',
+        'starts_h' => 'EINST.L_STARTS_H', 'anlauf_s' => 'EINST.L_ANLAUF_S',
+        'stale_s' => 'EINST.L_STALE_S');
     /* Dieselbe Positivliste wie die Sicherung - eine zweite Wahrheit ueber
      * zulaessige Werte gibt es nicht (pw_grenzen). */
     foreach (array('name', 'modell', 'art', 'ruht_s', 'quelle', 'quelle_topic',
@@ -334,7 +390,9 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
          * schickt das Auswahlfeld immer mit, und deshalb waere es am
          * Bildschirm nie aufgefallen. */
         if (!isset($_POST[$pw_f])) { continue; }
-        $pw_roh = (string) $_POST[$pw_f];
+        /* Ungecastet in die Pruefung: ein Feld, das als Liste kommt, faellt
+         * dort durch - (string) machte daraus "Array" samt Warnung. */
+        $pw_roh = $_POST[$pw_f];
         list($pw_wert, $pw_grund) = pw_wert_pruefen($pw_f, $pw_roh);
         if ($pw_grund === '') {
             $pw_neu[$pw_f] = $pw_wert;
@@ -345,7 +403,11 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
          * ueberschrieb jede Runde die Meldung der vorigen, und gespeichert
          * wurde bei einem einzigen Fehler gar nichts - der Anwender sah ein
          * Feld beanstandet und verlor alle Eingaben. */
-        $pw_bez = pw_t('EINST.L_' . strtoupper($pw_f));
+        /* O8 (1.0.4): die Beschriftung aus einer ausgeschriebenen Zuordnung.
+         * Bis 1.0.3 wurde der Schluessel gerechnet, und fuer Name, Art und
+         * Ruhefrist stand "EINST.L_NAME" roh in der Meldung - die
+         * Schluessel stehen unter PUMPE.L_* (Pruefbericht oberflaeche O8). */
+        $pw_bez = pw_t(isset($pw_beschriftung[$pw_f]) ? $pw_beschriftung[$pw_f] : 'EINST.L_MODELL');
         if (strncmp($pw_grund, 'bereich:', 8) === 0) {
             list(, $pw_min, $pw_max) = explode(':', $pw_grund, 3);
             $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_BEREICH'), $pw_bez, $pw_min, $pw_max);
@@ -362,6 +424,13 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
                    'sperre_schaltspiel', 'sperre_ueberlast', 'sperre_kein_anlauf',
                    'sperre_ruht', 'quittung_noetig') as $pw_h) {
         $pw_neu[$pw_h] = isset($_POST[$pw_h]) ? 1 : 0;
+    }
+    /* B4 (1.0.4): ein Quell-Filter, der die eigenen Themen trifft ('#',
+     * '+/+', '<praefix>/#'), liesse den Zuhoerer sich selbst abhoeren. */
+    if (!$pw_beanstandet) {
+        foreach (pw_quelle_kollisionen(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid)) as $pw_k) {
+            $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_ECHO'), pw_e($pw_k));
+        }
     }
     if ($pw_beanstandet) {
         $pw_fehler = array_merge($pw_fehler, $pw_beanstandet);
@@ -401,15 +470,51 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
      * pw_mqtt_thema_saeubern() bleibt trotzdem stehen und wird weiter
      * gebraucht - fuer den Weg ueber eine zurueckgespielte Sicherung und
      * beim Senden selbst. Hier davor steht jetzt die Pruefung. */
-    $pw_thema_roh = isset($_POST['mqtt_topic']) ? (string) $_POST['mqtt_topic'] : '';
+    $pw_thema_roh = isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '';
+    $pw_alt_praefix = pw_mqtt_thema(pw_pumpe($pw_voll, $pw_pid));
     list($pw_thema_wert, $pw_thema_grund) = pw_wert_pruefen('mqtt_topic', $pw_thema_roh);
     if ($pw_thema_grund !== '') {
+        /* O7 (1.0.4): bei einer Beanstandung wird NICHTS gespeichert - auch
+         * nicht der Haken. Bis 1.0.3 stand "Gespeichert." neben der
+         * Beanstandung, und mqtt_ein war umgestellt (Pruefbericht
+         * oberflaeche O7; Regeln/05: speichern nur mit leerer Liste). */
         $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_MUSTER'), pw_t('MQTT.L_TOPIC'));
     } else {
         $pw_neu['mqtt_topic'] = pw_mqtt_thema_saeubern($pw_thema_wert);
+        $pw_neu_voll = pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid);
+        $pw_kol = pw_quelle_kollisionen($pw_neu_voll);
+        if ($pw_kol) {
+            foreach ($pw_kol as $pw_k) { $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_ECHO'), pw_e($pw_k)); }
+        } elseif (pw_config_speichern($pw_neu_voll)) {
+            $pw_meldungen[] = pw_t('ALLG.GESPEICHERT');
+            $pw_neu_praefix = pw_mqtt_thema(pw_pumpe(pw_config(), $pw_pid));
+            /* B9 (1.0.4): das alte Praefix wird abgeraeumt - seine retained
+             * Themen stuenden sonst fuer immer im Broker. Nur, wenn keine
+             * andere Pumpe es noch traegt. */
+            if ($pw_neu_praefix !== $pw_alt_praefix
+                && !in_array($pw_alt_praefix, pw_eigene_praefixe(pw_config()), true)) {
+                list($pw_am, $pw_af) = pw_ui_praefix_leeren($pw_alt_praefix);
+                $pw_meldungen = array_merge($pw_meldungen, $pw_am);
+                $pw_fehler = array_merge($pw_fehler, $pw_af);
+            }
+            /* B2 (1.0.4): nach dem Speichern sofort der VOLLE Satz - nach
+             * einem Praefixwechsel und nach "MQTT ein" stuenden die Zustaende
+             * sonst erst nach einer Aenderung im Broker (Regeln/07). Gesendet
+             * werden die Felder aus dem gespeicherten Zustand, ohne ihn zu
+             * schreiben: das Lebenszeichen und den Merker fuehrt der naechste
+             * Takt fort, und der schickt nach einem Praefixwechsel ohnehin
+             * noch einmal den vollen Satz. */
+            if (!empty($pw_neu['mqtt_ein'])) {
+                $pw_vp = pw_pumpe(pw_config(), $pw_pid);
+                list($pw_nv, $pw_nf, $pw_ng) = pw_mqtt_publish(pw_felder(pw_stand($pw_pid), $pw_vp), $pw_vp);
+                if ($pw_ng !== null) {
+                    $pw_meldungen[] = sprintf(pw_t('MQTT.VOLL_GESENDET'), pw_e($pw_neu_praefix), (int) $pw_nv, (int) $pw_nf);
+                }
+            }
+        } else {
+            $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
+        }
     }
-    if (pw_config_speichern(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid))) { $pw_meldungen[] = pw_t('ALLG.GESPEICHERT'); }
-    else { $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config'])); }
     $pw_tab = 'tab-mqtt';
 }
 
@@ -446,8 +551,9 @@ if ($pw_ist_post && isset($_POST['selbsttest'])) {
     $pw_tab = 'tab-test';
 }
 if ($pw_ist_post && isset($_POST['testwert'])) {
-    $pw_roh = isset($_POST['watt']) ? trim((string) $_POST['watt']) : '';
-    if ($pw_roh === '' || !is_numeric(str_replace(',', '.', $pw_roh))) {
+    $pw_roh = (isset($_POST['watt']) && is_string($_POST['watt'])) ? trim($_POST['watt']) : '';
+    /* C7 (1.0.4): unter -5 W, NaN und unendlich ist keine Messung. */
+    if ($pw_roh === '' || !is_numeric(str_replace(',', '.', $pw_roh)) || !pw_watt_gueltig($pw_roh)) {
         $pw_fehler[] = pw_t('TEST.FEHLER_WATT');
     } else {
         $pw_wattwert = (float) str_replace(',', '.', $pw_roh);
@@ -489,9 +595,54 @@ if ($pw_ist_post && isset($_POST['wartung_reset'])) {
     $pw_tab = 'tab-bilanz';
 }
 if ($pw_ist_post && isset($_POST['log_leeren'])) {
-    @file_put_contents(pw_paths()['log'], '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Oberflaeche)\n");
-    $pw_meldungen[] = pw_t('LOG.GELEERT');
+    /* O9 (1.0.4): die Erfolgsmeldung nur, wenn wirklich geschrieben wurde.
+     * Bis 1.0.3 stand "Das Protokoll wurde geleert." auch dann, wenn an
+     * der Stelle der Datei ein Ordner lag (Pruefbericht oberflaeche O9). */
+    $pw_lz = '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Oberflaeche)\n";
+    $pw_lr = is_dir(pw_paths()['log']) ? false : @file_put_contents(pw_paths()['log'], $pw_lz);
+    if ($pw_lr === strlen($pw_lz)) {
+        $pw_meldungen[] = pw_t('LOG.GELEERT');
+    } else {
+        $pw_fehler[] = sprintf(pw_t('LOG.FEHLER_LEEREN'), pw_e(pw_paths()['log']));
+    }
     $pw_tab = 'tab-log';
+}
+
+/* ==================================================================
+ * JEDER POST ENDET MIT EINER UMLEITUNG (O1, 1.0.4)
+ * ==================================================================
+ *
+ * Regeln/04: header('Location: index.php?form=...', true, 303) und exit;
+ * das Ergebnis reist als Einmalmeldung (Datenordner, 0600, 120 s, nur
+ * beim GET gelesen und dabei geloescht). Bis 1.0.3 lieferte jeder POST
+ * die Seite direkt: F5 wuerfelte ein neues Aktionstoken, legte eine
+ * Pumpe doppelt an und zaehlte einen Testwert doppelt (Pruefbericht
+ * oberflaeche O1, Bauart D). Die Downloads (Vorlage, Sicherung) sind
+ * oben schon mit exit fertig. Auch die Abweisung durch den Wachposten
+ * geht diesen Weg. */
+if ($pw_ist_post) {
+    if (!pw_meldung_ablegen(array('meldungen' => $pw_meldungen, 'fehler' => $pw_fehler,
+                                  'testausgabe' => $pw_testausgabe))) {
+        pw_log('Die Einmalmeldung liess sich nicht schreiben - das Ergebnis des letzten '
+               . 'Knopfdrucks ist nach der Umleitung nicht zu sehen.');
+    }
+    $pw_ziel_ids = pw_pumpe_ids(pw_config());
+    $pw_ziel = in_array($pw_pid, $pw_ziel_ids, true) ? $pw_pid : ($pw_ziel_ids ? $pw_ziel_ids[0] : '');
+    header('Location: index.php?form=' . substr($pw_tab, 4)
+           . ($pw_ziel !== '' ? '&pumpe=' . rawurlencode($pw_ziel) : ''), true, 303);
+    exit;
+}
+$pw_einmal = pw_meldung_abholen();
+if ($pw_einmal !== null) {
+    foreach (array('meldungen', 'fehler') as $pw_ek) {
+        foreach (isset($pw_einmal[$pw_ek]) && is_array($pw_einmal[$pw_ek]) ? $pw_einmal[$pw_ek] : array() as $pw_ez) {
+            if (!is_string($pw_ez)) { continue; }
+            if ($pw_ek === 'meldungen') { $pw_meldungen[] = $pw_ez; } else { $pw_fehler[] = $pw_ez; }
+        }
+    }
+    if (isset($pw_einmal['testausgabe']) && is_string($pw_einmal['testausgabe'])) {
+        $pw_testausgabe = $pw_einmal['testausgabe'];
+    }
 }
 
 /* ==================================================================
@@ -653,9 +804,11 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL') . ' ' . pw_fassung(), 'https
 <h1 style="font-size:1.4em;margin:10px 0 0;"><?= pw_e(pw_t('ALLG.TITEL')) ?> <span style="font-size:0.62em;color:#777;font-weight:400;"><?= pw_e(pw_fassung()) ?></span></h1>
 
 <?php if (pw_sprache_fehlt()) { ?><div class="sm-warnung"><?= pw_sprache_notfall() ?></div><?php } ?>
-<?php foreach ($pw_meldungen as $pw_z) { ?><div class="sm-hinweis"><?= $pw_z ?></div><?php } ?>
+<?php /* Die Meldungen kommen seit 1.0.4 aus der Einmalmeldung und sind
+   Klartext - deshalb maskiert (Regeln/04). */ ?>
+<?php foreach ($pw_meldungen as $pw_z) { ?><div class="sm-hinweis"><?= pw_e($pw_z) ?></div><?php } ?>
 <?php if ($pw_fehler) { ?><div class="sm-warnung"><b><?= pw_t('ALLG.FEHLER') ?></b><ul style="margin:6px 0 0 18px;padding:0;"><?php
-    foreach ($pw_fehler as $pw_z) { echo '<li>' . $pw_z . '</li>'; } ?></ul></div><?php } ?>
+    foreach ($pw_fehler as $pw_z) { echo '<li>' . pw_e($pw_z) . '</li>'; } ?></ul></div><?php } ?>
 
 <div class="sm-kacheln">
   <div class="sm-kachel"><?= pw_t('KOPF.PUMPE') ?><b class="<?= $pw_felder['laeuft'] === 1 ? 'sm-an' : ($pw_felder['laeuft'] === 0 ? '' : 'sm-aus') ?>"><?=
@@ -720,6 +873,7 @@ if ($pw_felder['laeuft'] === -1) {
   <form action="index.php" method="post" class="sm-pumpen-form">
     <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.85em;"><input data-role="none" type="checkbox" name="bestaetigt" value="1"> <?= pw_e(sprintf(pw_t('PUMPE.WEG_BESTAETIGEN'), pw_pumpe_name($pw_cfg))) ?></label>
     <button data-role="none" class="sm-btn sm-b-aktion sm-pumpe-knopf" type="submit" name="pumpe_weg" value="1"><?= pw_e(pw_t('PUMPE.K_WEG')) ?></button>
   </form>
 <?php endif; ?>
@@ -949,16 +1103,14 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 <table class="sm-tbl">
 <tr><th><?= pw_t('MQTT.SP_THEMA') ?></th><th style="width:12%"><?= pw_t('LOX.SP_EINHEIT') ?></th><th style="width:20%"><?= pw_t('MQTT.SP_RETAIN') ?></th><th style="width:38%"><?= pw_t('LOX.SP_BEDEUTUNG') ?></th></tr>
 <?php foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_mk => $pw_mr): ?>
-<tr><td class="sm-mono"><?= pw_e($pw_topic . '/' . $pw_mk) ?></td><td><?= pw_e($pw_mr['einheit']) ?></td><td><?= pw_t('WORT.NEIN') ?></td><td><?= pw_t($pw_mr['bed']) ?></td></tr>
+<tr><td class="sm-mono"><?= pw_e($pw_topic . '/' . $pw_mk) ?></td><td><?= pw_e($pw_mr['einheit']) ?></td><td><?= in_array($pw_mk, pw_retain_liste(), true) ? pw_t('WORT.JA') : pw_t('WORT.NEIN') ?></td><td><?= pw_t($pw_mr['bed']) ?></td></tr>
 <?php endforeach; ?>
 </table>
 </div>
-<?php /* Die Spalte Retain wird nicht behauptet, sondern gezaehlt: das
-   Plugin schickt ueber den UDP-Eingang des Gateways ausschliesslich
-   "publish", nie "retain". Es sind also 0 von allen. Ein Satz "alle Themen
-   sind retained" hat im Bestand schon einmal an sieben Stellen gestanden
-   und war falsch (REGELN_2, 8789). */ ?>
-<div class="sm-hilfe"><?= sprintf(pw_t('MQTT.H_RETAIN'), 0,
+<?php /* Die Spalte Retain wird nicht behauptet, sondern aus DERSELBEN
+   Liste gezaehlt, nach der gesendet wird (pw_retain_liste(), B1 1.0.4,
+   Entscheidung 3). Bis 1.0.3 waren es 0 von allen. */ ?>
+<div class="sm-hilfe"><?= sprintf(pw_t('MQTT.H_RETAIN'), count(pw_retain_liste()),
     count(pw_felderliste()) + count(pw_statusliste())) ?></div>
 </div>
 
@@ -999,7 +1151,7 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
  * dreimal im Quelltext, obwohl der Kommentar "eine Quelle" behauptete. Ein
  * zwoelftes Feld waere weder in der Vorlage noch hier erschienen. */
 foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?>
-<tr><td class="sm-mono"><?= pw_e($pw_topic . '_' . $pw_fk) ?></td><td><?= pw_e($pw_fr['einheit']) ?></td><td><?= pw_t($pw_fr['bed']) ?></td></tr>
+<tr><td class="sm-mono"><?= pw_e(pw_eingangsname($pw_topic, $pw_fk)) ?></td><td><?= pw_e($pw_fr['einheit']) ?></td><td><?= pw_t($pw_fr['bed']) ?></td></tr>
 <?php endforeach; ?>
 </table>
 </div>
@@ -1199,6 +1351,12 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 <h2><?= pw_e(pw_t('TEST.H_PRUEFUNG')) ?></h2>
 <div class="sm-hilfe"><?= pw_t('TEST.H_PRUEFUNG_TEXT') ?></div>
 <?php
+/* O10 (1.0.4): die Selbstpruefung ruft den eigenen Endpunkt ueber HTTP ab
+ * und darf nur laufen, wenn der Reiter Test serverseitig der offene ist
+ * (Regeln/04). Bis 1.0.3 lief sie bei JEDEM Seitenaufbau, weil alle Reiter
+ * mitgerendert werden - mit haengendem Webserver 3-4 s je Seite
+ * (Pruefbericht oberflaeche O10). */
+if ($pw_tab === 'tab-test') {
 $pw_zeilen = pw_selbstpruefung($pw_cfg);
 $pw_haken = 0; $pw_kreuz = 0; $pw_striche = 0;
 foreach ($pw_zeilen as $pw_zz) {
@@ -1218,6 +1376,9 @@ foreach ($pw_zeilen as $pw_zz) {
 </table>
 <div class="sm-<?= ($pw_kreuz > 0) ? 'warnung' : 'hinweis' ?>"><?=
     sprintf(pw_t('TEST.ZUSAMMEN'), $pw_haken, count($pw_zeilen), $pw_kreuz, $pw_striche) ?></div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= pw_e(pw_t('TEST.NUR_IM_REITER')) ?> <a data-role="none" href="index.php?form=test<?= $pw_q ?>"><?= pw_e(pw_t('TEST.K_PRUEFEN')) ?></a></div>
+<?php } ?>
 <div class="sm-hilfe"><?= pw_t('TEST.STRICH_ERKLAERUNG') ?></div>
 
 <h2><?= pw_e(pw_t('REITER.TEST')) ?></h2>
@@ -1245,7 +1406,7 @@ foreach ($pw_zeilen as $pw_zz) {
 <form action="index.php" method="post" style="margin:0;display:flex;gap:10px;align-items:center;">
   <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
-  <input data-role="none" type="text" name="watt" placeholder="z. B. 600" style="max-width:140px;">
+  <input data-role="none" type="text" name="watt" placeholder="<?= pw_e(pw_t('TEST.PLATZHALTER_WATT')) ?>" style="max-width:140px;">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testwert" value="1"><?= pw_t('TEST.K_WERT') ?></button>
 </form>
 <form action="index.php" method="post" style="margin:0;">
@@ -1265,6 +1426,14 @@ foreach ($pw_zeilen as $pw_zz) {
 <div class="sm-seite<?= $pw_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= pw_t('LEGENDE.AKTION') ?></span></div>
 <h2><?= pw_e(pw_t('REITER.LOG')) ?></h2>
+<?php /* O12 (1.0.4): Hausform des Reiters Logdateien (Regeln/04) - die
+   Protokollliste von LoxBerry, der Hinweis auf die Ramdisk, und die beiden
+   Dateien des Minutentakts: das Startprotokoll des Zuhoerers (seine
+   Fehlerausgabe) und cron.err (gescheiterte Starts). Bis 1.0.3 zeigte der
+   Reiter bei fehlendem Protokoll ein leeres Feld ohne Satz, und die
+   Startfehler waren aus der Oberflaeche nicht erreichbar. */ ?>
+<div class="sm-hinweis"><?= pw_e(pw_t('LOG.RAMDISK')) ?></div>
+<?php if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) { echo LBWeb::loglist_html(); } ?>
 <div class="sm-hilfe"><?= pw_t('LOG.TEXT') ?> <span class="sm-mono"><?= pw_e($pw_p['log']) ?></span></div>
 <form action="index.php" method="post">
   <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
@@ -1273,7 +1442,25 @@ foreach ($pw_zeilen as $pw_zz) {
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= pw_t('LOG.K_LEEREN') ?></button>
   </div>
 </form>
-<pre class="sm-pre"><?php foreach (pw_log_lesen() as $pw_z) { echo pw_e($pw_z) . "\n"; } ?></pre>
+<?php $pw_lz_zeilen = pw_log_lesen();
+if (!$pw_lz_zeilen) { ?>
+<div class="sm-hinweis"><?= pw_e(pw_t('LOG.LEER')) ?></div>
+<?php } else { ?>
+<pre class="sm-pre"><?php foreach ($pw_lz_zeilen as $pw_z) { echo pw_e($pw_z) . "\n"; } ?></pre>
+<?php } ?>
+<?php foreach (array(array('LOG.H_START', $pw_p['startlog']), array('LOG.H_CRONERR', $pw_p['cronerr'])) as $pw_ld) {
+    /* Das ENDE der Datei, hoechstens 32 KiB - das Neueste steht unten. */
+    $pw_lt = '';
+    if (is_file($pw_ld[1]) && is_readable($pw_ld[1])) {
+        clearstatcache(true, $pw_ld[1]);
+        $pw_lt = (string) @file_get_contents($pw_ld[1], false, null, max(0, (int) filesize($pw_ld[1]) - 32768));
+    } ?>
+<h3><?= pw_e(pw_t($pw_ld[0])) ?> <span class="sm-mono" style="font-weight:400;"><?= pw_e($pw_ld[1]) ?></span></h3>
+<?php if (trim($pw_lt) === '') { ?>
+<div class="sm-hilfe"><?= pw_e(pw_t('LOG.DATEI_LEER')) ?></div>
+<?php } else { ?>
+<pre class="sm-pre"><?= pw_e($pw_lt) ?></pre>
+<?php } } ?>
 </div>
 
 </div><!-- sm-wrap -->

@@ -6,9 +6,67 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.3 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.4 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.4
+
+Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
+Gemessen an Attrappen für Shelly-Werte, `mosquitto_sub`, Broker und Gateway
+(mit Verlustmodell am UDP-Eingang) unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+Befunde mit Datei:Zeile:
+`Pruefung-Durchgang-2026-09-29/Pumpenwacht_BEFUNDE_UND_VERBESSERUNGEN.md`.
+Die Abschnitte zu älteren Fassungen darunter beschreiben den damaligen Stand.
+
+**Alarme erreichen Loxone**
+
+* **Nach einem Update ist die Ruhe-Überwachung sofort wieder scharf.** Bisher
+  war der Alarm „Pumpe läuft gar nicht“ nach jedem Update abgeschaltet, bis die
+  Pumpe wieder einmal lief.
+* **Tagesbilanz, Betriebsstunden, Startzähler, Wartungsmarken und eine
+  anliegende Sperre überstehen jetzt jedes Update.**
+* Eine Messlücke setzt die Fristen nicht mehr zurück. Bisher verschob eine
+  6-min-Lücke den Ruhe-Alarm um einen Tag, und Lücken alle 25 min verhinderten
+  den Dauerlauf-Alarm ganz.
+* Fällt die Messquelle aus, gehen `laeuft=-1` und `befund=5` zurückbehalten
+  hinaus und werden in jedem Takt wiederholt; bei 70 % Verlust am UDP-Eingang
+  zeigte Loxone den Ausfall nach 10 min in 20 von 20 Läufen (bisher 0 von 20).
+* Der MQTT-Zuhörer startet nach Stopp, Konfigurationsänderung oder Absturz
+  zuverlässig neu (die Sperre vererbte sich an `mosquitto_sub`).
+* `OK=0` gilt jetzt nach 180 s ohne Messung (bisher 300 s). Ein aus 1.0.3
+  übernommener Wert 300 wird beim Update auf 180 gesetzt.
+
+**Messwerte und MQTT**
+
+* Unsinnswerte (unendlich, deutlich negativ) werden verworfen; Werte bis −5 W
+  gelten als 0 („steht“, Messrauschen).
+* Retained sind jetzt die Zustände `laeuft`, `befund`, `sperre`, `sperrgrund`,
+  `quittung`, `quelle_online`; die Alarmthemen gehen in jedem Takt hinaus, die
+  übrigen bei Änderung und vollständig alle 30 Minuten.
+* Ein Quell-Filter, der die eigenen Themen trifft, wird abgewiesen, und der
+  Zuhörer liest eigene Themen nie als Messwert.
+* Präfixwechsel und Deinstallation räumen die zurückbehaltenen Themen direkt am
+  Broker ab. Vorlagen-Namen wie im Gateway (`haus/sumpf` → `haus_sumpf_…`).
+* Die Sendemeldung sagt „abgeschickt“, nicht „angekommen“.
+
+**Oberfläche**
+
+* Nach jedem Knopf leitet die Seite um; F5 würfelt kein Token neu, legt keine
+  Pumpe doppelt an und **löscht nicht mehr versehentlich die erste Pumpe**.
+* Pumpe entfernen nur mit Bestätigungshaken.
+* Die Sicherung enthält das Formulargeheimnis nicht mehr.
+* Eingaben werden abgewiesen statt halb gespeichert; Beanstandungen nennen
+  Feldnamen.
+* Die Netzprobe läuft nur im Reiter Test; der Reiter Test zeigt keine falschen
+  Kreuze mehr und ein Kreuz bei fehlendem Cron-Eintrag.
+
+**Installation**
+
+* Eine Neuinstallation spielt keine alte Zweitschrift mehr ein (neu:
+  `preinstall.sh`, Reste nach `.alt`).
+* Eine abgeschnittene Konfiguration überschreibt die Zweitschrift nicht.
+* Nach einem Update keine Ersteinrichtungs-Hinweise mehr.
 
 ## Neu in 1.0.3 — der Minutentakt hält während einer Aktualisierung still
 
@@ -107,6 +165,10 @@ die Datei danach nicht mehr vorhanden. Der Satz im Kopf von `postupgrade.sh`,
 sie *bleibe*, trifft nur auf das `rm -f` in derselben Datei zu, nicht auf den
 Installer. Die Rettung gehört nach `preupgrade.sh`, **neben** den Datenordner
 — sie ist eine eigene Änderung mit eigener Messung und steht noch aus.
+**Nachtrag:** In 1.0.4 behoben. `preupgrade.sh` legt Tagesbilanz, Zustand
+(Betriebsstunden, Starts, Wartungsmarken, letzter Lauf) und die Liste der
+MQTT-Präfixe als Bestand **neben** den Datenordner; `postupgrade.sh` spielt
+ihn nur bei vorhandener Marke zurück, sonst geht er nach `.alt`.
 
 ---
 
@@ -547,7 +609,10 @@ config/plugins/<ordner>/pumpenwacht.json   die Konfiguration (0600)
 config/plugins/<ordner>.backup.json        die Zweitschrift (0600)
 data/plugins/<ordner>/stand.json           der laufende Zustand
 data/plugins/<ordner>/tage.json            die Tagesbilanz, 60 Tage
+data/plugins/<ordner>/mqtt_praefixe.json   die je benutzten MQTT-Präfixe
 data/plugins/<ordner>.upgrade_laeuft       nur während einer Aktualisierung
+data/plugins/<ordner>.bestand/             nur während einer Aktualisierung:
+                                           Zustand und Tagesbilanz
 log/plugins/<ordner>/pumpenwacht.log       das Protokoll
 ```
 

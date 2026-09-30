@@ -124,6 +124,11 @@ function pw_paths()
         'sperre'    => $home . '/data/plugins/' . $dir . '/stand.lock',
         'logdir'    => $home . '/log/plugins/' . $dir,
         'log'       => $home . '/log/plugins/' . $dir . '/pumpenwacht.log',
+        /* O12 (1.0.4): die beiden Dateien des Minutentakts. Das
+         * Startprotokoll traegt die Fehlerausgabe des Zuhoerers, cron.err
+         * die Neustartfehler (cron/cron.01min). */
+        'startlog'  => $home . '/log/plugins/' . $dir . '/pumpenwacht_start.log',
+        'cronerr'   => $home . '/log/plugins/' . $dir . '/cron.err',
         'general'   => $home . '/config/system/general.json',
     );
     return $p;
@@ -149,17 +154,9 @@ function pw_json_schreiben($pfad, $daten, $rechte = 0664)
 {
     $json = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($json === false) { return false; }
-    /* Fragen statt anlegen: ein mkdir auf einen vorhandenen Ordner meldet
-     * 'File exists'. Das @ unterdrueckt die Anzeige, aber ein eigener
-     * Fehler-Aufnehmer sieht sie trotzdem - und dann steht sie bei JEDEM
-     * Schreibvorgang im Protokoll. Gefunden von rendern.py. */
-    $pw_d = dirname($pfad);
-    if (!is_dir($pw_d)) { @mkdir($pw_d, 0775, true); }
-    $tmp = $pfad . '.' . getmypid() . '.neu';
-    if (@file_put_contents($tmp, $json) === false) { @unlink($tmp); return false; }
-    @chmod($tmp, $rechte);
-    if (!@rename($tmp, $pfad)) { @unlink($tmp); return false; }
-    return true;
+    /* Geschrieben wird ueber pw_datei_schreiben(): Rechte vor Inhalt, Laenge
+     * geprueft, erst dann umbenannt (C9, 1.0.4). */
+    return pw_datei_schreiben($pfad, $json, $rechte);
 }
 
 /* ==================================================================
@@ -328,7 +325,10 @@ function pw_vorgaben()
         // Nach so vielen Sekunden ohne Anlieferung gilt der Zustand als
         // unbekannt (Befund "still") - der Ausfall des Zwischenzaehlers
         // darf nie wie eine ruhende Anlage aussehen.
-        'stale_s'         => 300,
+        /* C8 (1.0.4, Entscheidung 4): 180 s = 3 x Minutentakt. Bis 1.0.3
+         * stand hier 300 (5 x Takt). Ein vom Anwender eingetragener Wert
+         * bleibt - die Vorgabe greift nur, wo keiner gespeichert ist. */
+        'stale_s'         => 180,
         'mqtt_ein'        => 1,
         'mqtt_topic'      => 'pumpe',
         'aktionstoken'    => '',
@@ -772,9 +772,10 @@ function pw_zweitschrift_ziehen($quelle, $ziel, array $neu, array $felder, $rech
              . 'traegt nicht, was dort steht (' . implode(', ', $fehlt) . '): ' . $ziel);
         return false;
     }
-    if (!@copy($quelle, $ziel)) { return false; }
-    if ($rechte !== null) { @chmod($ziel, $rechte); }
-    return true;
+    /* Rechte VOR dem Inhalt (C9, 1.0.4): die Zweitschrift traegt das
+     * Aktionstoken. Bis 1.0.3 stand hier copy() und danach chmod() - beim
+     * ersten Anlegen stand das Token kurz mit den Rechten der Umask da. */
+    return pw_datei_kopieren($quelle, $ziel, $rechte === null ? 0600 : $rechte);
 }
 
 function pw_config($erzeugen = true)
@@ -813,14 +814,13 @@ function pw_config($erzeugen = true)
             && (!is_file($kaputt)
                 || (string) @file_get_contents($kaputt)
                    !== (string) @file_get_contents($p['config']))) {
-            if (@copy($p['config'], $kaputt)) { @chmod($kaputt, 0600); }
+            pw_datei_kopieren($p['config'], $kaputt, 0600);
         }
         /* Geheilt wird NUR aus einer Zweitschrift, die selbst Inhalt traegt.
          * Ein Stand ohne Inhalt darf keinen anderen ersetzen - in keine der
          * beiden Richtungen. */
         if (pw_config_hat_inhalt(pw_inhalt_oder_null($p['sicherung']))
-            && @copy($p['sicherung'], $p['config'])) {
-            @chmod($p['config'], 0600);
+            && pw_datei_kopieren($p['sicherung'], $p['config'], 0600)) {
             pw_log('Die Konfiguration trug kein Aktionstoken und wurde aus der '
                  . 'Zweitschrift wiederhergestellt: ' . $p['sicherung']
                  . (is_file($kaputt)
@@ -1044,34 +1044,31 @@ function pw_stand_speichern($stand, $id = null)
 function pw_sperre_holen()
 {
     $p = pw_paths();
-    @mkdir($p['datadir'], 0775, true);
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
     $fh = @fopen($p['sperre'], 'c');
     if (!$fh) {
         /* Bis 0.9.10 stand hier "return null" - und beide Aufrufer pruefen
          * nur auf === false. Bei null lief das ganze Lesen-Rechnen-Schreiben
-         * OHNE Sperre durch, pw_sperre_geben(null) tat nichts, und der
-         * Rueckgabewert meldete Erfolg. Gemessen 31.08.2026 auf beiden
-         * PHP-Fassungen (Sperrpfad als Ordner angelegt): "grund='' , stand
-         * geschrieben: true".
+         * OHNE Sperre durch.
          *
-         * Damit war genau der Zustand wieder da, den 0.9.8 beseitigt hat -
-         * Cron-Takt, Zuhoerer und Oberflaeche schreiben gleichzeitig -, nur
-         * ohne Meldung. Auf dem Geraet tritt das ein, wenn der Datenordner
-         * nicht beschreibbar ist: falscher Eigentuemer nach einem Rueckspiel
-         * von Hand, oder eine SD-Karte, die nach einem Dateisystemfehler
-         * nur noch lesend eingehaengt ist.
+         * Seit 0.9.11 gab es hier dasselbe false wie bei einer belegten
+         * Sperre - und genau das war der naechste Fehler (C5, 1.0.4): der
+         * Takt las "eine Anlieferung schreibt gerade", endete mit rc=0 und
+         * schickte GAR NICHTS, auch kein Lebenszeichen. Loxone behielt
+         * status_ok=1 (gemessen, Pruefbericht code C5: 0 Datagramme).
          *
-         * Jetzt: derselbe Rueckgabewert wie bei einer belegten Sperre, damit
-         * die Aufrufer abbrechen - und EINE Zeile im Protokoll je Prozess,
-         * denn stumm bleiben darf das nicht. */
+         * Jetzt: null heisst "nicht zu oeffnen", und BEIDE Aufrufer
+         * unterscheiden es von false ("belegt"). Sie schreiben nichts, aber
+         * das Lebenszeichen geht mit status_ok=0 hinaus. EINE Zeile im
+         * Protokoll je Prozess, denn stumm bleiben darf das nicht. */
         static $gemeldet = false;
         if (!$gemeldet) {
             $gemeldet = true;
             pw_log('SPERRE nicht zu oeffnen: ' . $p['sperre']
                    . ' - der Datenordner ist vermutlich nicht beschreibbar.'
-                   . ' Es wird NICHTS geschrieben, solange das so ist.');
+                   . ' Es wird NICHTS geschrieben, solange das so ist; nach Loxone geht status_ok=0.');
         }
-        return false;
+        return null;
     }
     if (!@flock($fh, LOCK_EX | LOCK_NB)) { @fclose($fh); return false; }
     return $fh;
@@ -1105,7 +1102,26 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
 {
     $cfg = pw_flach($cfg, 'pw_verarbeiten');
     $jetzt = $jetzt === null ? time() : $jetzt;
+    /* C7 (1.0.4): ein Wert, der keine Leistung sein kann - unter -5 W, NaN,
+     * unendlich -, ist KEINE Messung. Bis 1.0.3 galt -50 W als "Pumpe steht"
+     * mit status_ok=1, und 1e999 ging als "watt INF" nach Loxone. Die
+     * Aufrufer pruefen selbst (Endpunkt 400, Zuhoerer zaehlt); diese Zeile
+     * ist die Wache dahinter. */
+    if ($watt !== null && !pw_watt_gueltig($watt)) {
+        return array(null, 'watt', 0, 0);
+    }
+    /* Entscheidung 13: -5 W bis 0 W ist Messrauschen einer stehenden Pumpe
+     * und gilt als 0 ("steht"); darunter ist es keine Messung (oben). */
+    if ($watt !== null) {
+        $watt = max(0.0, (float) str_replace(',', '.', trim((string) $watt)));
+    }
     $fh = pw_sperre_holen();
+    if ($fh === null) {
+        /* C5 (1.0.4): Datenordner nicht beschreibbar - nichts schreiben,
+         * aber das Lebenszeichen mit status_ok=0 schicken. */
+        list($v, $f) = pw_lebenszeichen_stoerung($cfg, $jetzt);
+        return array(null, 'datenordner', $v, $f);
+    }
     if ($fh === false) { return array(null, 'belegt', 0, 0); }
     try {
         /* Die Kennung kommt aus der flachen Sicht - pw_pumpe() legt sie
@@ -1113,7 +1129,7 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
          * zwei Pumpen zaehlten auf denselben Zaehler. */
         $pw_pid = isset($cfg['id']) ? (string) $cfg['id'] : null;
         $alt = pw_stand($pw_pid);
-        $stale = (float) pw_zahl(isset($cfg['stale_s']) ? $cfg['stale_s'] : 300, 300.0);
+        $stale = (float) pw_zahl(isset($cfg['stale_s']) ? $cfg['stale_s'] : 180, 180.0);
         $letzte = pw_zahl(isset($alt['quelle_ts']) ? $alt['quelle_ts'] : 0, 0.0);
 
         if ($watt === null) {
@@ -1135,23 +1151,19 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
         $neu = pw_schritt($mess, $cfg, $alt, $jetzt);
 
         /* pw_schritt() baut den Zustand FRISCH auf und uebernimmt aus dem
-         * alten nur, was es zum Rechnen braucht - das ist richtig so, der
-         * Kern soll von Buchhaltung nichts wissen. Sie muss deshalb hier
-         * hinweggerettet werden, wo beide Staende nebeneinanderliegen.
-         *
-         * Bis zur Messung vom 28.08.2026 geschah das nicht. Folge eins:
-         * mqtt_sig und status_zaehler fielen bei jedem Durchlauf heraus,
-         * der Doppelt-senden-Filter griff nie, und der Zaehler stand
-         * dauerhaft auf 0 - ausgerechnet der Wert, an dem Loxone einen
-         * Ausfall erkennen soll. Folge zwei, und die ist schwerer: ein
-         * Klick auf "Wartung durchgefuehrt" war beim naechsten Minutentakt
-         * wieder fort, und zwar lautlos - die Zaehler "seit der letzten
-         * Wartung" standen danach einfach wieder bei den Gesamtzahlen. */
+         * alten nur, was es zum Rechnen braucht. Die Buchhaltung wird hier
+         * hinweggerettet, wo beide Staende nebeneinanderliegen (seit
+         * 28.08.2026). Seit 1.0.4 gehoeren dazu der Merker der zuletzt
+         * gesendeten Werte (mqtt_letzte, mqtt_voll_ts, mqtt_praefix - B2/B3),
+         * die Meldung "UDP-Eingang fehlt" (C6) und der Zeitpunkt des letzten
+         * Minutentakts (takt_ts, B8). mqtt_sig aus 1.0.3 faellt weg. */
         foreach (array('wartung_ts', 'wartung_lauf_s', 'wartung_starts',
-                       'mqtt_sig', 'status_zaehler',
+                       'status_zaehler', 'takt_ts',
+                       'mqtt_letzte', 'mqtt_voll_ts', 'mqtt_praefix', 'mqtt_port_fehlt',
                        'volt', 'ampere', 'hertz', 'quelle_online') as $pw_bk) {
             if (isset($alt[$pw_bk])) { $neu[$pw_bk] = $alt[$pw_bk]; }
         }
+        if ($quelle === 'takt') { $neu['takt_ts'] = (int) $jetzt; }
 
         /* Nebenwerte des MQTT-Weges. Sie kommen nur mit, wenn sie
          * mitgeschickt wurden - ein fehlender Wert loescht den bisherigen
@@ -1172,13 +1184,7 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
         } else {
             $neu['watt'] = isset($alt['watt']) ? $alt['watt'] : null;
             $neu['quelle_ts'] = $letzte;
-            /* Auch ohne neue Anlieferung wird die Liste ausgeduennt.
-             * pw_anlieferung_merken() wirft Eintraege aelter als 24 h
-             * heraus - bis 0.9.10 geschah das nur, wenn ein Messwert kam.
-             * Blieb die Quelle dauerhaft stumm, fror der Reiter Bilanz auf
-             * einem tage- oder wochenalten Bestand ein und zeigte weiter
-             * "zyklisch, mittlerer Abstand N s", als waere das der
-             * aktuelle Takt. */
+            /* Auch ohne neue Anlieferung wird die Liste ausgeduennt (0.9.11). */
             $neu['anlieferungen'] = pw_anlieferung_stutzen(
                 isset($alt['anlieferungen']) ? $alt['anlieferungen'] : array(), $jetzt);
         }
@@ -1206,14 +1212,10 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
                    . ' Startzeitpunkt(e) liegen in der Zukunft. Die Schaltspielzaehlung '
                    . 'laesst sie aus, bis die Uhr sie eingeholt hat.');
         }
-        /* Senden, BEVOR geschrieben wird - die Signatur und der Zaehler
-         * gehoeren in denselben Schreibvorgang. Sonst stuende im Zustand
-         * eine Signatur, die zu nichts gehoert, oder es braeuchte einen
-         * zweiten Schreibvorgang neben der Sperre. */
-        list($versucht, $fehl, $sig, $zaehler) =
-            pw_publizieren($neu, $cfg, $jetzt, $erzwingen);
-        $neu['mqtt_sig'] = $sig;
-        $neu['status_zaehler'] = $zaehler;
+        /* Senden, BEVOR geschrieben wird - der Merker der gesendeten Werte
+         * und der Zaehler gehoeren in denselben Schreibvorgang. */
+        list($versucht, $fehl, $meta) = pw_publizieren($neu, $cfg, $jetzt, $erzwingen);
+        $neu = array_merge($neu, $meta);
         if (!pw_stand_speichern($neu, $pw_pid)) { return array(null, 'speichern', $versucht, $fehl); }
         return array($neu, '', $versucht, $fehl);
     } finally {
@@ -1235,15 +1237,19 @@ function pw_zustand_aendern($aendern, $cfg, $erzwingen = true, $jetzt = null)
 {
     $jetzt = $jetzt === null ? time() : $jetzt;
     $fh = pw_sperre_holen();
+    if ($fh === null) {
+        /* C5 (1.0.4): siehe pw_verarbeiten(). */
+        list($v, $f) = pw_lebenszeichen_stoerung($cfg, $jetzt);
+        return array(null, 'datenordner', $v, $f);
+    }
     if ($fh === false) { return array(null, 'belegt', 0, 0); }
     try {
         $pw_pid = isset($cfg['id']) ? (string) $cfg['id'] : null;
         $neu = call_user_func($aendern, pw_stand($pw_pid));
         if (!is_array($neu)) { return array(null, 'speichern', 0, 0); }
-        list($versucht, $fehl, $sig, $zaehler) =
-            pw_publizieren($neu, $cfg, $jetzt, $erzwingen);
-        $neu['mqtt_sig'] = $sig;
-        $neu['status_zaehler'] = $zaehler;
+        list($versucht, $fehl, $meta) = pw_publizieren($neu, $cfg, $jetzt, $erzwingen);
+        $neu = array_merge($neu, $meta);
+        unset($neu['mqtt_sig']);
         if (!pw_stand_speichern($neu, $pw_pid)) { return array(null, 'speichern', $versucht, $fehl); }
         return array($neu, '', $versucht, $fehl);
     } finally {
@@ -1465,7 +1471,9 @@ function pw_log($text)
 function pw_log_lesen($anzahl = 300)
 {
     $p = pw_paths();
-    if (!is_readable($p['log'])) { return array(); }
+    /* is_file dazu (1.0.4): liegt an der Stelle ein Ordner, meldete file()
+     * eine Warnung mitten in der Seite (gefunden bei der Probe zu O9). */
+    if (!is_file($p['log']) || !is_readable($p['log'])) { return array(); }
     $z = file($p['log'], FILE_IGNORE_NEW_LINES) ?: array();
     return array_slice(array_reverse($z), 0, $anzahl);
 }
@@ -1654,68 +1662,110 @@ function pw_mqtt_thema($cfg = null)
  * Rueckgabe: array(versucht, gescheitert) - der Aufrufer zaehlt beides, und
  * die Schlussmeldung nennt beides getrennt.
  */
-function pw_mqtt_publish($paare, $cfg = null)
+function pw_mqtt_publish($paare, $cfg = null, $folge = null)
 {
     $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
-    if (empty($cfg['mqtt_ein'])) { return array(0, 0); }
+    if (empty($cfg['mqtt_ein'])) { return array(0, 0, null); }
+    /* $folge: die Reihenfolge der Datagramme, Wiederholungen erlaubt (B2/B3,
+     * 1.0.4 - die Alarmwege gehen im Alarm mehrfach hinaus). Ohne Angabe
+     * einmal jedes Paar. Eine leere Nutzlast geht nie hinaus: mit retain
+     * loeschte sie das Thema (Entscheidung 3). */
+    if ($folge === null) { $folge = array_keys($paare); }
+    $liste = array();
+    foreach ($folge as $k) {
+        if (array_key_exists($k, $paare) && $paare[$k] !== null && $paare[$k] !== '') { $liste[] = $k; }
+    }
     $m = pw_mqtt_gateway_info();
-    if (!$m['udpport']) { return array(0, 0); }
+    if (!$m['udpport']) {
+        /* C6 (1.0.4): ohne UDP-Eingang kommt NICHTS an - das ist ein
+         * Fehlschlag, kein "0 gesendet, 0 gescheitert". Bis 1.0.3 meldete
+         * der Takt hier Erfolg (rc=0, keine Protokollzeile). Die Meldung je
+         * Wechsel schreibt pw_publizieren(). */
+        return array(0, count($liste), null);
+    }
     $topic = pw_mqtt_thema($cfg);
     $fp = @stream_socket_client('udp://127.0.0.1:' . (int) $m['udpport'],
                                 $errno, $errstr, 2);
-    if (!$fp) { return array(0, count($paare)); }
+    if (!$fp) { return array(0, count($liste), null); }
     @stream_set_timeout($fp, 2);
-    $versucht = 0; $fehl = 0;
-    foreach ($paare as $k => $v) {
-        if ($v === null || $v === '') { continue; }
-        $msg = 'publish ' . $topic . '/' . pw_mqtt_wert_saeubern($k)
-             . ' ' . pw_mqtt_wert_saeubern($v);
+    /* B1 (1.0.4, Entscheidung 3): Zustaende retained - ueber den UDP-Eingang
+     * des Gateways mit dem Befehl "retain" statt "publish" (Regeln/07). */
+    $retain = array_flip(pw_retain_liste());
+    $versucht = 0; $fehl = 0; $gesendet = array();
+    foreach ($liste as $i => $k) {
+        /* 5 ms zwischen zwei Datagrammen (B3, Hausmass Fensterbilanz 0.12.9,
+         * BatterieBMS 0.9.21): ein Stoss ohne Pause kam am Geraet zu 0-7 %
+         * an (Regeln/07). */
+        if ($i > 0) { usleep(PW_UDP_PAUSE_US); }
+        $msg = (isset($retain[$k]) ? 'retain ' : 'publish ') . $topic . '/'
+             . pw_mqtt_wert_saeubern($k) . ' ' . pw_mqtt_wert_saeubern($paare[$k]);
         $versucht++;
         $n = @fwrite($fp, $msg);
-        if ($n === false || $n < strlen($msg)) { $fehl++; }
+        if (!is_int($n) || $n < strlen($msg)) { $fehl++; } else { $gesendet[$k] = true; }
     }
     @fclose($fp);
-    return array($versucht, $fehl);
+    return array($versucht, $fehl, array_keys($gesendet));
 }
 
 /**
- * Die Signatur ueber die Werte - Grundlage des Doppelt-senden-Filters.
+ * Welche Themen sind retained? (B1, 1.0.4, Entscheidung 3 und 12)
  *
- * Das LEBENSZEICHEN gehoert NICHT hinein. Ein Wert, der sich jede Sekunde
- * aendert (ein Alter, ein Zeitstempel, ein Zaehler), macht den Filter
- * wirkungslos: jeder Durchgang schickte wieder alle Themen. Das steht in
- * REGELN_1 als eigener Fehler vom 27.08.2026.
- *
- * SPANNUNG, STROM UND FREQUENZ gehoeren aus demselben Grund nicht hinein,
- * und das ist gemessen, nicht vermutet. Am 28.08.2026 lieferte der Shelly
- * ueber zwei Minuten:
- *
- *     voltage 231.8 -> 232.0 -> 232.5      freq 50.05 -> 50.03 -> 50.01
- *
- * Die Netzspannung wandert dauernd. Stuende sie in der Signatur, waere
- * sie bei JEDER Minutenmeldung eine andere - und der Filter schickte
- * jedes Mal wieder den vollen Satz. Genau das ist die ALTER-Falle, nur
- * mit anderen Zahlen.
- *
- * Sie gehen deshalb NUR mit, wenn ohnehin gesendet wird - also wenn sich
- * am Zustand der Pumpe etwas geaendert hat. Das kostet nichts: sie sind
- * eine Diagnosehilfe (eine Unterspannung erklaert, warum eine Pumpe nicht
- * anlaeuft), keine Groesse, auf die eine Regelung wartet. Wer sie
- * fortlaufend braucht, abonniert das Thema des Zaehlers selbst - es liegt
- * ja auf demselben Broker.
+ * Zustaende retained: laeuft, befund, sperre, sperrgrund, quittung und die
+ * Anwesenheit der Quelle. Nie retained: Messwerte mit Zeitbezug (watt,
+ * volt, ampere, hertz, beiwert, lauf_s, ruht_s, letzter_lauf_s), Tageswerte
+ * (*_tag, *_vortag), betrieb_h, zeitsprung und das Lebenszeichen samt
+ * status_ok (Regeln/07: nie retained - ein zurueckbehaltenes ok=1 bliebe
+ * nach dem Tod des Plugins stehen). EINE Liste fuer Sender, Oberflaeche und
+ * Deinstallation.
  */
-function pw_signatur($felder)
+function pw_retain_liste()
 {
-    $ohne = $felder;
-    foreach (array('status_ts', 'status_zaehler', 'status_ok', 'quelle_ts',
-                   'volt', 'ampere', 'hertz') as $k) {
-        unset($ohne[$k]);
-    }
-    return md5(json_encode($ohne));
+    return array('laeuft', 'befund', 'sperre', 'sperrgrund', 'quittung', 'quelle_online');
 }
 
 /**
- * Veroeffentlichen mit Doppelt-senden-Filter und Lebenszeichen.
+ * Die Alarmwege - sie gehen in JEDEM Durchgang hinaus, geaendert oder nicht
+ * (B2/B3, 1.0.4). Zusammen mit status_ok aus dem Lebenszeichen tragen sie
+ * den Alarm; laeuft=-1/befund=5 beim Ausfall der Messquelle (Entscheidung 12)
+ * gehoert dazu. Bis 1.0.3 hing die Wiederholung an einem Nebeneffekt
+ * (lauf_s/ruht_s in der Signatur), und der Uebergang auf "unbekannt" ging
+ * genau EINMAL hinaus (Pruefbericht mqtt B2).
+ */
+function pw_alarm_themen()
+{
+    return array('laeuft', 'befund', 'sperre');
+}
+
+/**
+ * Werte, die sich in jedem Takt aendern. Sie stehen NICHT im Vergleich
+ * "hat sich etwas geaendert?" (sonst ginge wie bis 1.0.3 jeder Takt voll
+ * hinaus - Pruefbericht mqtt B3: 25 von 25 je Takt und je Anlieferung),
+ * sondern gehen mit, wenn ohnehin gesendet wird, und im Vollversand.
+ */
+function pw_zeit_themen()
+{
+    return array('lauf_s', 'ruht_s', 'lauf_s_tag', 'beiwert', 'betrieb_h', 'volt', 'ampere', 'hertz');
+}
+
+/* Vollversand alle 30 min (Regeln/07 Z. 97), Pause zwischen zwei Datagrammen
+ * (B3), und wie oft die Alarmwege im Alarm je Durchgang hinausgehen. Die
+ * Wiederholung ist gegen Verlust am UDP-Eingang gebaut (am Geraet 17-70 %):
+ * im Pruefstand des mqtt-Pruefers kam der Uebergang auf "unbekannt" bei 70 %
+ * Verlust sonst in einem Teil der Laeufe nie an. */
+if (!defined('PW_VOLLVERSAND_S')) { define('PW_VOLLVERSAND_S', 1800); }
+if (!defined('PW_UDP_PAUSE_US')) { define('PW_UDP_PAUSE_US', 5000); }
+if (!defined('PW_ALARM_WIEDERHOLUNG')) { define('PW_ALARM_WIEDERHOLUNG', 3); }
+
+/**
+ * Veroeffentlichen: Alarmwege immer, der Rest bei Aenderung, alles alle 30 min.
+ *
+ * Bis 1.0.3 stand hier ein Doppelt-senden-Filter ueber eine Signatur aller
+ * Werte. Er wirkte im Betrieb nie (lauf_s und ruht_s aendern sich jede
+ * Minute), und der Alarm-Uebergang auf "unbekannt" ging genau einmal
+ * hinaus (Pruefbericht mqtt B2/B3). Seit 1.0.4: Alarmwege in jedem
+ * Durchgang (im Alarm mehrfach), der Rest je Thema bei Aenderung, alles
+ * alle 30 min; Rueckgabe array(versucht, gescheitert, Merker fuer den
+ * Zustand).
  *
  * Bis 0.9.7 ging bei JEDER Anlieferung der volle Satz hinaus - bei
  * 10-Sekunden-Takt rund 95000 Nachrichten am Tag.
@@ -1737,19 +1787,93 @@ function pw_publizieren($stand, $cfg, $jetzt = null, $erzwingen = false)
 {
     $jetzt = $jetzt === null ? time() : $jetzt;
     $felder = pw_felder($stand, $cfg, $jetzt);
-    $sig = pw_signatur($felder);
-    $alt_sig = isset($stand['mqtt_sig']) ? (string) $stand['mqtt_sig'] : '';
     $zaehler = ((int) pw_zahl(isset($stand['status_zaehler']) ? $stand['status_zaehler'] : -1, -1.0) + 1) % 1000;
+    $praefix = pw_mqtt_thema($cfg);
+    $letzte = (isset($stand['mqtt_letzte']) && is_array($stand['mqtt_letzte'])) ? $stand['mqtt_letzte'] : array();
+    $voll_ts = pw_zahl(isset($stand['mqtt_voll_ts']) ? $stand['mqtt_voll_ts'] : 0, 0.0);
+    $alt_praefix = isset($stand['mqtt_praefix']) ? (string) $stand['mqtt_praefix'] : '';
+    /* VOLLVERSAND (B2, 1.0.4): erzwungen (Speichern im Reiter MQTT, Knopf,
+     * nach einem Update), wenn noch nie gesendet wurde oder der Merker
+     * verworfen ist (MQTT war aus, der UDP-Eingang fehlte), nach einem
+     * Praefixwechsel und spaetestens alle 30 min. Bis 1.0.3 ging nach einem
+     * Praefixwechsel und nach "MQTT ein" in ruhenden Zustaenden nur das
+     * Lebenszeichen hinaus (Pruefbericht mqtt B2, Fall W). */
+    $voll = $erzwingen || !$letzte || $alt_praefix !== $praefix || $voll_ts <= 0
+          || ($jetzt - $voll_ts) >= PW_VOLLVERSAND_S || $jetzt < $voll_ts;
 
-    $senden = ($erzwingen || $sig !== $alt_sig) ? $felder : array();
+    $leben = array(
+        'status_ts'        => (int) $jetzt,
+        'status_zaehler'   => $zaehler,
+        'status_ok'        => ($felder['laeuft'] === -1) ? 0 : 1,
+        'status_quelle_ts' => (int) pw_zahl(isset($stand['quelle_ts']) ? $stand['quelle_ts'] : 0, 0.0),
+    );
+    $alarm = pw_alarm_themen();
+    $zeit = array_flip(pw_zeit_themen());
+    /* Die Alarmwege zuerst - in jedem Durchgang. */
+    $folge = $alarm;
+    if ($voll) {
+        foreach (array_keys($felder) as $k) {
+            if (!in_array($k, $alarm, true)) { $folge[] = $k; }
+        }
+    } else {
+        $geaendert = array();
+        foreach ($felder as $k => $v) {
+            if (in_array($k, $alarm, true) || isset($zeit[$k])) { continue; }
+            if (!array_key_exists($k, $letzte) || (string) $letzte[$k] !== (string) $v) { $geaendert[] = $k; }
+        }
+        if ($geaendert) {
+            foreach (array_keys($felder) as $k) {
+                if (in_array($k, $geaendert, true) || isset($zeit[$k])) { $folge[] = $k; }
+            }
+        }
+    }
     /* Das Lebenszeichen - immer. */
-    $senden['status_ts'] = (int) $jetzt;
-    $senden['status_zaehler'] = $zaehler;
-    $senden['status_ok'] = ($felder['laeuft'] === -1) ? 0 : 1;
-    $senden['status_quelle_ts'] = (int) pw_zahl(isset($stand['quelle_ts']) ? $stand['quelle_ts'] : 0, 0.0);
+    foreach (array_keys($leben) as $k) { $folge[] = $k; }
+    /* Im Alarm - Befund, Sperre oder "unbekannt" - gehen die Alarmwege
+     * samt status_ok mehrfach hinaus, jeweils hinter den uebrigen
+     * Datagrammen (5 ms Abstand). */
+    $im_alarm = ($felder['laeuft'] === -1 || $felder['befund'] !== 0 || $felder['sperre'] === 1);
+    if ($im_alarm) {
+        for ($i = 1; $i < PW_ALARM_WIEDERHOLUNG; $i++) {
+            foreach ($alarm as $k) { $folge[] = $k; }
+            $folge[] = 'status_ok';
+        }
+    }
+    $werte = array_merge($felder, $leben);
+    list($versucht, $fehl, $gesendet) = pw_mqtt_publish($werte, $cfg, $folge);
 
-    list($versucht, $fehl) = pw_mqtt_publish($senden, $cfg);
-    return array($versucht, $fehl, $sig, $zaehler);
+    $meta = array('status_zaehler' => $zaehler);
+    /* C6 (1.0.4): ein fehlender UDP-Eingang wird je WECHSEL einmal
+     * protokolliert, nicht jede Minute. */
+    $gw = pw_mqtt_gateway_info();
+    $port_fehlt = (!empty($cfg['mqtt_ein']) && !$gw['udpport']) ? 1 : 0;
+    if ($port_fehlt !== (!empty($stand['mqtt_port_fehlt']) ? 1 : 0)) {
+        pw_log($port_fehlt
+            ? 'WARNUNG: In der general.json steht kein UDP-Eingang des MQTT-Gateways (Mqtt.Udpinport) - '
+              . 'es geht NICHTS nach Loxone, auch kein Alarm. Der Takt endet mit Rueckgabewert 1.'
+            : 'MQTT: der UDP-Eingang des Gateways ist wieder eingetragen - es wird wieder gesendet.');
+    }
+    $meta['mqtt_port_fehlt'] = $port_fehlt;
+    if ($gesendet === null) {
+        /* Nichts gesendet (MQTT aus, kein Eingang): der Merker wird NICHT
+         * fortgeschrieben, sondern verworfen - sobald wieder gesendet wird,
+         * geht der volle Satz hinaus (B2). */
+        $meta['mqtt_letzte'] = array();
+        $meta['mqtt_voll_ts'] = 0;
+        $meta['mqtt_praefix'] = '';
+    } else {
+        $neu_letzte = ($alt_praefix === $praefix) ? $letzte : array();
+        foreach ($gesendet as $k) {
+            if (array_key_exists($k, $felder)) { $neu_letzte[$k] = (string) $felder[$k]; }
+        }
+        $meta['mqtt_letzte'] = $neu_letzte;
+        $meta['mqtt_voll_ts'] = ($voll && $fehl === 0) ? $jetzt : $voll_ts;
+        $meta['mqtt_praefix'] = $praefix;
+        /* B9: jedes Praefix, unter dem je retained gesendet wurde, merkt sich
+         * das Plugin - die Deinstallation raeumt unter allen ab. */
+        if ($alt_praefix !== $praefix) { pw_mqtt_praefix_merken($praefix); }
+    }
+    return array($versucht, $fehl, $meta);
 }
 
 /** Befund als Zahl fuer Loxone. Die Zuordnung steht im Reiter "Einbindung". */
@@ -1887,18 +2011,21 @@ function pw_felder($stand, $cfg, $jetzt = null)
                             ? -1 : round((float) $stand['ampere'], 2),
         'hertz'          => ($veraltet || !isset($stand['hertz']) || $stand['hertz'] === null)
                             ? -1 : round((float) $stand['hertz'], 2),
-        /* Sekunden seit dem letzten Lauf. -1 = es wurde noch nie einer
-         * gesehen; dann kann auch keiner vermisst werden. */
-        'ruht_s'         => (isset($stand['starts_gesamt']) && (int) $stand['starts_gesamt'] > 0
-                             && isset($stand['seit']) && $stand['seit'] > 0
-                             && (int) $laeuft === 0)
-                            ? (int) max(0, $jetzt - $stand['seit']) : -1,
         /* Die Anwesenheit der QUELLE - nicht des Messwerts. Sie veraltet
          * ausdruecklich NICHT mit: der Shelly meldet sein 'online'
          * aufbewahrt, und genau darin liegt der Wert. 'Seit Minuten kein
          * Messwert' heisst etwas anderes, wenn das Geraet sich
          * abgemeldet hat. -1 = keine Auskunft (Weg ueber Loxone). */
         'quelle_online'  => isset($stand['quelle_online']) ? (int) $stand['quelle_online'] : -1,
+        /* O4 (1.0.4): ruht_s steht wie in pw_felderliste() am Ende. Bis
+         * 1.0.3 standen die beiden Zeilen hier vertauscht, und der Reiter
+         * Test zeigte auf jeder Anlage ein Kreuz "Feldliste". */
+        /* Sekunden seit dem letzten Lauf. -1 = es wurde noch nie einer
+         * gesehen; dann kann auch keiner vermisst werden. */
+        'ruht_s'         => (isset($stand['starts_gesamt']) && (int) $stand['starts_gesamt'] > 0
+                             && isset($stand['seit']) && $stand['seit'] > 0
+                             && (int) $laeuft === 0)
+                            ? (int) max(0, $jetzt - $stand['seit']) : -1,
     );
 }
 
@@ -2050,7 +2177,11 @@ function pw_vorlage_vi($cfg = null, $texte = null)
          * gar kein Zusatz - dann ist die Datei dieselbe wie bisher. */
         $zusatz = count($pumpen) > 1 ? ' (' . pw_pumpe_name($p) . ')' : '';
         foreach (array_merge(pw_felderliste(), pw_statusliste()) as $k => $r) {
-            $o .= pw_vi_zeile($topic . '_' . $k, pw_kurz($k, $texte) . $zusatz, $r);
+            /* B5 (1.0.4): der Name, den das Gateway daraus macht - '/' wird
+             * '_' auch INNERHALB des Praefixes. Bis 1.0.3 entstand bei
+             * 'haus/sumpf' der Eingang 'haus/sumpf_laeuft', das Gateway
+             * schreibt nach 'haus_sumpf_laeuft' (gemessen 0 von 25 gleich). */
+            $o .= pw_vi_zeile(pw_eingangsname($topic, $k), pw_kurz($k, $texte) . $zusatz, $r);
         }
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -2267,7 +2398,13 @@ function pw_sicherung_bauen($cfg = null)
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Pumpenwaechter. '
                     . 'Sie enthaelt das Aktionstoken - wie ein Kennwort behandeln.',
     );
-    return array_merge($kopf, $cfg);
+    $aus = array_merge($kopf, $cfg);
+    /* O5 (1.0.4): das Geheimnis des Formularmerkmals gehoert NICHT hinein
+     * (Regeln/05). Bis 1.0.3 stand es darin, und aus der Datei liess sich das
+     * Merkmal der Seite nachrechnen: ein POST "Neues Aktionstoken" nur mit
+     * diesem Merkmal wirkte (Pruefbericht oberflaeche O5). */
+    unset($aus['formgeheim']);
+    return $aus;
 }
 
 /**
@@ -2317,46 +2454,56 @@ function pw_sicherung_lesen($roh)
      * sind keine Einstellungen und haben in keiner Pumpe etwas zu suchen. */
     foreach (array_keys($daten) as $k) {
         if (strncmp((string) $k, '_', 1) !== 0) { continue; }
-        if ($k === '_plugin' && (string) $daten[$k] !== 'pumpenwacht') {
+        if ($k === '_plugin' && (!is_string($daten[$k]) || $daten[$k] !== 'pumpenwacht')) {
             $mangel[] = sprintf(pw_t('EINST.SICH_FREMDES_PLUGIN'),
-                                pw_e((string) $daten[$k]));
+                                pw_e(is_scalar($daten[$k]) ? (string) $daten[$k] : gettype($daten[$k])));
         }
         unset($daten[$k]);
     }
-
-    /* FREMDE SCHLUESSEL OBEN - VOR der Wanderung.
-     *
-     * Die Wanderung baut den oberen Teil NEU auf: Globales und 'pumpen',
-     * sonst nichts. Was sie nicht kennt, wirft sie weg - und danach findet
-     * die Pruefung weiter unten nichts mehr zu beanstanden. Eine Datei mit
-     * {"boese": 1} galt als angenommen.
-     *
-     * NUR bei der neuen Form: in einer flachen Datei aus 0.9.14 stehen die
-     * Pumpenschluessel oben, und dort sind sie voellig richtig. Sie werden
-     * nach der Wanderung bei ihrer Pumpe geprueft. */
+    /* O5 (1.0.4): ein mitgebrachtes formgeheim wird UEBERGANGEN - nicht
+     * uebernommen und nicht beanstandet. So bleiben Sicherungen aus 1.0.3
+     * lesbar, und das Geheimnis der laufenden Anlage bleibt, wie es ist. */
+    unset($daten['formgeheim']);
     $vorg_global = array_intersect_key(pw_vorgaben(),
                                        array_flip(pw_global_schluessel()));
+    unset($vorg_global['formgeheim']);
+
+    /* O6 (1.0.4): die FORM der Pumpenliste und die Kennungen werden VOR der
+     * Wanderung geprueft - die Wanderung wuerde eine Kennung still
+     * zurechtbiegen ("<b>x</b>" -> "bxb", eine Liste -> "array"). */
     if (isset($daten['pumpen'])) {
         foreach (array_keys($daten) as $k) {
             if ($k === 'pumpen' || array_key_exists($k, $vorg_global)) { continue; }
             $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
         }
+        if (!is_array($daten['pumpen'])) {
+            $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'pumpen', pw_e(gettype($daten['pumpen'])));
+            return array(null, $mangel, 0, 0, array());
+        }
+        $form_mangel = false;
+        foreach ($daten['pumpen'] as $i => $p) {
+            if (!is_array($p)) {
+                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e('pumpen.' . $i), pw_e(gettype($p)));
+                $form_mangel = true;
+                continue;
+            }
+            if (array_key_exists('id', $p) && !pw_kennung_gueltig($p['id'])) {
+                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e('pumpen.' . $i . '.id'),
+                                    pw_e(is_scalar($p['id']) ? pw_kurztext((string) $p['id'], 60) : gettype($p['id'])));
+                $form_mangel = true;
+            }
+        }
+        if ($form_mangel) { return array(null, $mangel, 0, 0, array()); }
+    } elseif (array_key_exists('id', $daten) && !pw_kennung_gueltig($daten['id'])) {
+        $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'id',
+                            pw_e(is_scalar($daten['id']) ? pw_kurztext((string) $daten['id'], 60) : gettype($daten['id'])));
+        return array(null, $mangel, 0, 0, array());
     }
 
     /* Eine Sicherung aus der Zeit vor 1.0.0 ist flach. Sie wird GEWANDERT
-     * gelesen, nicht abgewiesen - sonst waere jede vorhandene Sicherung
-     * beim Umstieg wertlos. Geschrieben wird immer die neue Form.
-     *
-     * OHNE Vorgaben aufzufuellen: sonst erfindet die Wanderung ein leeres
-     * formgeheim, und der Schutz weiter unten weist die eigene Erfindung
-     * ab. Genau das ist beim ersten Versuch passiert. */
+     * gelesen, nicht abgewiesen. OHNE Vorgaben aufzufuellen. */
     $daten = pw_wandern($daten, false);
     $vorg_pumpe = pw_vorgaben_pumpe();
-    /* Die Kennung ist die ADRESSE einer Pumpe, kein Wert: sie wird nie
-     * "uebernommen", und solange sie mitgezaehlt wurde, war die Zahl
-     * unerreichbar ("26 von 27" bei einer vollstaendigen eigenen
-     * Sicherung). Und je Pumpe kommt ein voller Satz Werte mit - bei zwei
-     * Pumpen war die Zahl ausserdem zu klein. */
     $je_pumpe = count($vorg_pumpe) - 1;
     $wieviele = isset($daten['pumpen']) ? max(1, count($daten['pumpen'])) : 1;
     $erwartet = count($vorg_global) + $je_pumpe * $wieviele;
@@ -2372,22 +2519,10 @@ function pw_sicherung_lesen($roh)
             $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
             continue;
         }
-        /* Ein LEERES Geheimnis nimmt die Sicherung nicht an, wenn eines
-         * steht. Die Positivliste erlaubt die leere Zeichenkette (eine
-         * frische Konfiguration hat noch keine), und der Warnhinweis am
-         * Sicherungsknopf legt ausdruecklich nahe, die Datei vor der
-         * Weitergabe zu entschaerfen. Wer sie danach zuruecksspielte, bekam
-         * bis 0.9.10 "0 Beanstandungen, 21 von 21 uebernommen" - und der
-         * Endpunkt antwortete auf jede Loxone-Adresse mit
-         * KEIN_TOKEN_GESETZT. Beim naechsten Oeffnen der Oberflaeche wurde
-         * ein NEUES Token erzeugt; die Adressen im Miniserver waren damit
-         * endgueltig tot, ohne dass irgendwo etwas beanstandet worden
-         * waere.
-         *
-         * Ueberschrieben wird deshalb nur, wenn die Datei wirklich etwas
-         * mitbringt. Der leere Wert wird GENANNT, nicht verschwiegen. */
-        if (in_array($k, array('aktionstoken', 'formgeheim'), true)
-            && trim((string) $w) === ''
+        /* Ein LEERES Aktionstoken nimmt die Sicherung nicht an, wenn eines
+         * steht (0.9.11). Gefragt wird nur bei einer Zeichenkette - eine
+         * Liste faellt unten durch die Wertpruefung. */
+        if ($k === 'aktionstoken' && is_string($w) && trim($w) === ''
             && trim((string) (isset($neu[$k]) ? $neu[$k] : '')) !== '') {
             $mangel[] = sprintf(pw_t('EINST.SICH_LEER_GEHEIM'), pw_e($k));
             continue;
@@ -2395,7 +2530,7 @@ function pw_sicherung_lesen($roh)
         list($wert, $grund) = pw_wert_pruefen($k, $w);
         if ($grund !== '') {
             $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e($k),
-                                pw_e(is_scalar($w) ? substr((string) $w, 0, 60) : gettype($w)));
+                                pw_e(is_scalar($w) ? pw_kurztext((string) $w, 60) : gettype($w)));
             continue;
         }
         $neu[$k] = $wert;
@@ -2418,15 +2553,20 @@ function pw_sicherung_lesen($roh)
         $ziel = array_merge(pw_vorgaben_pumpe(), $ziel, array('id' => $id));
         foreach ($p as $k => $w) {
             if ($k === 'id') { continue; }
-            if ($k === 'name') { $ziel['name'] = substr((string) $w, 0, 40); $anzahl++; continue; }
             if (!array_key_exists($k, $vorg_pumpe)) {
                 $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e($id . '.' . $k));
                 continue;
             }
+            /* O6 (1.0.4): auch der Name geht durch die Positivliste - wie im
+             * Formular. Bis 1.0.3 stand hier substr(..., 0, 40): eine Liste
+             * wurde "Array" (mit PHP-Warnung samt Serverpfad in der Seite),
+             * und die EIGENE Sicherung mit 40 Zeichen samt Umlaut wurde
+             * mitten im Zeichen geschnitten und als "liess sich nicht
+             * schreiben" abgewiesen. */
             list($wert, $grund) = pw_wert_pruefen($k, $w);
             if ($grund !== '') {
                 $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e($id . '.' . $k),
-                                    pw_e(is_scalar($w) ? substr((string) $w, 0, 60) : gettype($w)));
+                                    pw_e(is_scalar($w) ? pw_kurztext((string) $w, 60) : gettype($w)));
                 continue;
             }
             $ziel[$k] = $wert;
@@ -2439,6 +2579,11 @@ function pw_sicherung_lesen($roh)
         $doppelt = pw_praefixe_pruefen($neu);
         foreach ($doppelt as $d) {
             $mangel[] = sprintf(pw_t('EINST.SICH_PRAEFIX'), pw_e($d));
+        }
+        /* B4 (1.0.4): ein Quell-Filter, der die eigenen Themen trifft, hoerte
+         * das Plugin selbst ab - Rueckkopplung (Pruefbericht mqtt B4). */
+        foreach (pw_quelle_kollisionen($neu) as $d) {
+            $mangel[] = sprintf(pw_t('EINST.SICH_ECHO'), pw_e($d));
         }
     }
 
@@ -2599,7 +2744,10 @@ function pw_selbstpruefung($cfg = null)
     $add('PRUEF.GATEWAY', $m['gefunden'] ? 1 : 2,
          $m['gefunden'] ? ('V' . ($m['fassung'] > 0 ? $m['fassung'] : '?')) : '');
     $add('PRUEF.AUTOSTART', !$m['gefunden'] ? 2 : ($m['autostart'] ? 1 : 0), '');
-    $add('PRUEF.UDP', $m['udpport'] > 0 ? 1 : ($m['gefunden'] ? 0 : 2),
+    /* C6 (1.0.4): ist die Veroeffentlichung an und fehlt der Port, ist das
+     * ein Kreuz - ohne ihn kommt in Loxone nichts an. Bis 1.0.3 stand
+     * ohne Mqtt-Abschnitt ein Strich, und der Takt meldete Erfolg. */
+    $add('PRUEF.UDP', $m['udpport'] > 0 ? 1 : (($m['gefunden'] || !empty($cfg['mqtt_ein'])) ? 0 : 2),
          $m['udpport'] > 0 ? (string) $m['udpport'] : '');
     $add('PRUEF.MQTT_EIN', !empty($cfg['mqtt_ein']) ? 1 : 2, pw_mqtt_thema($cfg));
 
@@ -2675,7 +2823,8 @@ function pw_selbstpruefung($cfg = null)
     list(, $fehlten, $fremd) = pw_cfg_vervollstaendigen();
     $add('PRUEF.CFG_VOLL', ($fehlten || $fremd) ? 0 : 1,
          (count(pw_vorgaben()) - count($fehlten)) . '/' . count(pw_vorgaben())
-         . ($fremd ? (' + ' . count($fremd) . ' fremd: ' . implode(', ', $fremd)) : ''));
+         . ($fremd ? (' + ' . count($fremd) . ' ' . pw_t('PRUEF.T_FREMD') . ': '
+                      . implode(', ', $fremd)) : ''));
     $add('PRUEF.ZWEITSCHRIFT', is_readable($p['sicherung']) ? 1 : 0, '');
 
     /* --- Schwellen, die einander widersprechen ---
@@ -2757,8 +2906,12 @@ function pw_selbstpruefung($cfg = null)
     $add('PRUEF.BESCHRIFTUNG', $bok, $btext);
 
     /* --- Der Takt --- */
-    $add('PRUEF.CRON', is_file(dirname(dirname(__DIR__)) . '/cron/cron.01min')
-                       || is_file($p['home'] . '/system/cron/cron.01min/' . $p['plugin']) ? 1 : 2, '');
+    /* O13 (1.0.4): an ALLEN Cron-Orten suchen (Regeln/04, Raumklima
+     * 0.11.8). Ist das Plugin installiert und findet sich nichts, ist das
+     * ein Kreuz - ohne Takt geht in Loxone kein Ausfall hinaus. Bis 1.0.3
+     * stand dann ein Strich. */
+    list($pw_cok, $pw_ctext) = pw_cron_lage();
+    $add('PRUEF.CRON', $pw_cok, $pw_ctext);
 
     /* --- Der Kern --- */
     list($kn, $kf) = pw_selbsttest(false);
@@ -2794,7 +2947,8 @@ function pw_endpunkt_probe($cfg = null, $puffer_s = 300)
      * worden waere. Unter PHP 8 dazu zwei Warnungen in der Seite. */
     if (isset($alt['ts'], $alt['ok'], $alt['text'])
         && (time() - (int) $alt['ts']) < $puffer_s) {
-        return array((int) $alt['ok'], (string) $alt['text']);
+        return array((int) $alt['ok'], (isset($alt['schl']) && is_string($alt['schl']) && $alt['schl'] !== '')
+                                       ? pw_t($alt['schl']) : (string) $alt['text']);
     }
     if (trim((string) $cfg['aktionstoken']) === '') { return array(2, ''); }
     /* Der Port wird GELESEN, nicht angenommen: 80 ist die Vorgabe des
@@ -2822,8 +2976,8 @@ function pw_endpunkt_probe($cfg = null, $puffer_s = 300)
     restore_error_handler();
     if (!$fp) {
         pw_json_schreiben($datei, array('ts' => time(), 'ok' => 2,
-                                        'text' => 'Port ' . $port));
-        return array(2, 'Port ' . $port);
+                                        'text' => pw_t('PRUEF.T_PORT') . ' ' . $port));
+        return array(2, pw_t('PRUEF.T_PORT') . ' ' . $port);
     }
     @fclose($fp);
     $adr = 'http://127.0.0.1:' . $port . '/plugins/' . $p['plugin']
@@ -2836,16 +2990,19 @@ function pw_endpunkt_probe($cfg = null, $puffer_s = 300)
     set_error_handler(function () { return true; });
     $antwort = file_get_contents($adr, false, $ktx);
     restore_error_handler();
-    $ok = 2; $text = '';
+    $ok = 2; $text = ''; $schl = '';
     if ($antwort === false) {
-        $ok = 2; $text = 'keine Antwort';
+        $ok = 2; $text = pw_t('PRUEF.T_KEINE_ANTWORT'); $schl = 'PRUEF.T_KEINE_ANTWORT';
     } elseif (strpos($antwort, 'SELFTEST;OK=1') !== false) {
         $ok = 1;
     } else {
         $ok = 0;
         $text = substr(trim(preg_replace('/\s+/', ' ', $antwort)), 0, 60);
     }
-    pw_json_schreiben($datei, array('ts' => time(), 'ok' => $ok, 'text' => $text));
+    /* O11 (1.0.4): der Zwischenspeicher traegt den SPRACHSCHLUESSEL, nicht
+     * den Text - sonst zeigte die englische Seite fuenf Minuten lang, was
+     * die deutsche hineingeschrieben hat. */
+    pw_json_schreiben($datei, array('ts' => time(), 'ok' => $ok, 'text' => $text, 'schl' => $schl));
     return array($ok, $text);
 }
 
@@ -2905,7 +3062,7 @@ function pw_beschriftung_stimmig($cfg = null, $hoechstens = 60)
         }
     }
     return array($lang === 0 ? 1 : 0,
-                 $anzahl . ' / ' . $laengste . ' Z.');
+                 $anzahl . ' / ' . $laengste . ' ' . pw_t('PRUEF.T_ZEICHEN'));
 }
 
 /** Alle Vorlagen ueber EINEN Namen - so kann die Selbstpruefung sie zaehlen. */
@@ -3025,14 +3182,15 @@ function pw_felder_stimmig($cfg = null)
 {
     $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
     $liste = array_keys(array_merge(pw_felderliste(), pw_statusliste()));
-    $felder = array_keys(pw_felder(pw_stand(), $cfg));
+    $felder = array_keys(pw_felder(pw_stand(isset($cfg['id']) ? (string) $cfg['id'] : null), $cfg));
     // pw_felder liefert die Nutzfelder; die Statusthemen kommen erst beim
-    // Veroeffentlichen dazu.
+    // Veroeffentlichen dazu. Seit 1.0.4 (O4) in derselben Reihenfolge.
     if ($felder !== array_keys(pw_felderliste())) { return false; }
     list(, $xml) = pw_vorlage_vi($cfg);
     $topic = pw_mqtt_thema($cfg);
     foreach ($liste as $k) {
-        if (strpos($xml, 'Title="' . $topic . '_' . $k . '"') === false) { return false; }
+        /* Der Name, den das Gateway bildet (B5). */
+        if (strpos($xml, 'Title="' . pw_x(pw_eingangsname($topic, $k)) . '"') === false) { return false; }
     }
     return true;
 }
@@ -3040,13 +3198,20 @@ function pw_felder_stimmig($cfg = null)
 /** Trägt jede Befundzahl einen Sprachschluessel, und umgekehrt? */
 function pw_befunde_stimmig()
 {
+    /* O4 (1.0.4): die Zahl kommt aus der Liste, nicht fest 7. Bis 1.0.3
+     * fehlte PW_RUHT hier, und count() === 7 bei 8 Schluesseln stand auf
+     * jeder Anlage rot. Beide Richtungen: jeder Befund hat einen
+     * Schluessel, und jeder Schluessel gehoert zu genau einem Befund. */
     $schl = pw_befund_schluessel();
-    foreach (array(PW_OK, PW_SCHALTSPIEL, PW_DAUERLAUF, PW_TROCKEN,
-                   PW_UEBERLAST, PW_STILL, PW_KEIN_ANLAUF) as $b) {
+    $alle = array(PW_OK, PW_SCHALTSPIEL, PW_DAUERLAUF, PW_TROCKEN,
+                  PW_UEBERLAST, PW_STILL, PW_KEIN_ANLAUF, PW_RUHT);
+    $gesehen = array();
+    foreach ($alle as $b) {
         $n = pw_befund_zahl($b);
         if (!isset($schl[$n])) { return false; }
+        $gesehen[$n] = true;
     }
-    return count($schl) === 7;
+    return count($gesehen) === count($alle) && count($schl) === count($alle);
 }
 
 /**
@@ -3261,6 +3426,11 @@ function pw_mqtt_messwert($nutzlast)
 {
     $s = trim((string) $nutzlast);
     if ($s === '') { return null; }
+    /* Nebenwerte nur als endliche Zahl (C7, 1.0.4) - "voltage":1e999 wurde
+     * sonst INF und liess den Zustand nicht mehr speichern. */
+    $zahl = function ($x) {
+        return (is_numeric($x) && is_finite((float) $x)) ? (float) $x : null;
+    };
 
     // 2. Eine blanke Zahl.
     $z = str_replace(',', '.', $s);
@@ -3276,9 +3446,9 @@ function pw_mqtt_messwert($nutzlast)
     foreach (array('apower', 'power', 'watt') as $k) {
         if (isset($d[$k]) && is_numeric($d[$k])) {
             return array('watt' => (float) $d[$k],
-                         'volt' => isset($d['voltage']) && is_numeric($d['voltage']) ? (float) $d['voltage'] : null,
-                         'ampere' => isset($d['current']) && is_numeric($d['current']) ? (float) $d['current'] : null,
-                         'hertz' => isset($d['freq']) && is_numeric($d['freq']) ? (float) $d['freq'] : null);
+                         'volt' => isset($d['voltage']) ? $zahl($d['voltage']) : null,
+                         'ampere' => isset($d['current']) ? $zahl($d['current']) : null,
+                         'hertz' => isset($d['freq']) ? $zahl($d['freq']) : null);
         }
     }
 
@@ -3292,9 +3462,9 @@ function pw_mqtt_messwert($nutzlast)
         }
         return array(
             'watt'   => (float) $teil['apower'],
-            'volt'   => isset($teil['voltage']) && is_numeric($teil['voltage']) ? (float) $teil['voltage'] : null,
-            'ampere' => isset($teil['current']) && is_numeric($teil['current']) ? (float) $teil['current'] : null,
-            'hertz'  => isset($teil['freq']) && is_numeric($teil['freq']) ? (float) $teil['freq'] : null,
+            'volt'   => isset($teil['voltage']) ? $zahl($teil['voltage']) : null,
+            'ampere' => isset($teil['current']) ? $zahl($teil['current']) : null,
+            'hertz'  => isset($teil['freq']) ? $zahl($teil['freq']) : null,
         );
     }
     return null;
@@ -3436,6 +3606,13 @@ function pw_zeile_verarbeiten($zeile, $cfg, $jetzt = null, $schreiben = true)
         }
         return array('art' => $an >= 0 ? 'anwesenheit' : 'nichts',
                      'watt' => null, 'neben' => $neben,
+                     'versucht' => 0, 'gescheitert' => 0);
+    }
+    /* C7 (1.0.4): unter -5 W, NaN oder unendlich ist keine Messung - die Zeile
+     * wird verworfen und vom Zuhoerer gezaehlt, nie als 0 W gewertet. Bis
+     * 1.0.3 ergab apower -120.5 "laeuft 0" mit status_ok 1. */
+    if (!pw_watt_gueltig($m['watt'])) {
+        return array('art' => 'unsinn', 'watt' => $m['watt'], 'neben' => $neben,
                      'versucht' => 0, 'gescheitert' => 0);
     }
 
@@ -3643,4 +3820,642 @@ function pw_dienst_alter()
     if (!is_file($datei)) { return -1; }
     $ts = (int) trim((string) @file_get_contents($datei));
     return $ts > 0 ? (time() - $ts) : -1;
+}
+
+/* ==================================================================
+ * Neu in 1.0.4
+ * ================================================================== */
+
+/**
+ * Eine Datei unteilbar schreiben - RECHTE VOR INHALT (C9, Regeln/03).
+ *
+ * Die Zwischendatei traegt die Prozessnummer, wird exklusiv angelegt,
+ * bekommt ihre Rechte, BEVOR ein Byte darin steht, und wird erst nach
+ * geprueftem Schreiben umbenannt. Eine gekuerzte Schreibung (volle Karte)
+ * laesst das Ziel unberuehrt.
+ */
+function pw_datei_schreiben($pfad, $inhalt, $rechte = 0664)
+{
+    $inhalt = (string) $inhalt;
+    $d = dirname($pfad);
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $tmp = $pfad . '.' . getmypid() . '.neu';
+    if (is_file($tmp)) { @unlink($tmp); }
+    $fh = @fopen($tmp, 'x');
+    if (!$fh) { return false; }
+    @chmod($tmp, $rechte);
+    $n = @fwrite($fh, $inhalt);
+    $gut = is_int($n) && $n === strlen($inhalt) && @fflush($fh);
+    @fclose($fh);
+    if (!$gut) { @unlink($tmp); return false; }
+    if (!@rename($tmp, $pfad)) { @unlink($tmp); return false; }
+    return true;
+}
+
+/** Eine Datei kopieren - ueber pw_datei_schreiben(), also Rechte vor Inhalt. */
+function pw_datei_kopieren($quelle, $ziel, $rechte = 0600)
+{
+    if (!is_file($quelle)) { return false; }
+    $inhalt = @file_get_contents($quelle);
+    if (!is_string($inhalt)) { return false; }
+    return pw_datei_schreiben($ziel, $inhalt, $rechte);
+}
+
+/**
+ * Kann dieser Wert eine Leistungsaufnahme sein? (C7)
+ *
+ * Endlich und nicht unter -5 W (Entscheidung 13: bis -5 W ist es Messrauschen
+ * einer stehenden Pumpe, pw_verarbeiten() rechnet es als 0). Alles andere ist
+ * KEINE Messung - nie "Pumpe steht".
+ */
+if (!defined('PW_WATT_UNTERGRENZE')) { define('PW_WATT_UNTERGRENZE', -5.0); }
+function pw_watt_gueltig($w)
+{
+    if (is_bool($w) || $w === null) { return false; }
+    if (!is_int($w) && !is_float($w)) {
+        $s = str_replace(',', '.', trim((string) $w));
+        if ($s === '' || !is_numeric($s)) { return false; }
+        $w = (float) $s;
+    }
+    $f = (float) $w;
+    return is_finite($f) && $f >= PW_WATT_UNTERGRENZE;
+}
+
+/** Eine Pumpenkennung, wie die Oberflaeche sie vergibt (O6). */
+function pw_kennung_gueltig($id)
+{
+    return is_string($id) && preg_match('/^[a-z0-9_\-]{1,32}$/', $id) === 1;
+}
+
+/** Einen Text fuer eine Meldung kuerzen, ohne ein Zeichen zu zerschneiden. */
+function pw_kurztext($s, $n)
+{
+    $s = (string) $s;
+    return function_exists('mb_substr') ? mb_substr($s, 0, (int) $n, 'UTF-8') : substr($s, 0, (int) $n);
+}
+
+/**
+ * Der Name des virtuellen Eingangs, den das MQTT-Gateway aus einem Thema
+ * bildet (B5): '/', '%' und ' ' werden '_' - auch im Praefix. Gateway V2
+ * build_vi_name(), V1 im HTTP-Betrieb (Regeln/07, Abschnitt 1).
+ */
+function pw_eingangsname($praefix, $feld)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $praefix . '/' . (string) $feld);
+}
+
+/**
+ * Koennen zwei MQTT-Filter dasselbe Thema treffen? (B4)
+ *
+ * Abschnittsweise: '#' deckt den Rest, '+' genau einen Abschnitt.
+ */
+function pw_filter_ueberlappt($a, $b)
+{
+    $x = explode('/', (string) $a);
+    $y = explode('/', (string) $b);
+    $n = max(count($x), count($y));
+    for ($i = 0; $i < $n; $i++) {
+        $p = isset($x[$i]) ? $x[$i] : null;
+        $q = isset($y[$i]) ? $y[$i] : null;
+        if ($p === '#' || $q === '#') { return true; }
+        if ($p === null || $q === null) { return false; }
+        if ($p === '+' || $q === '+' || $p === $q) { continue; }
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Trifft ein Quell-Filter ein eigenes Thema? (B4, 1.0.4)
+ *
+ * Die eigenen Themen sind <praefix>/<feld> jeder Pumpe. Ein Filter wie '#',
+ * '+/+' oder 'pumpe/#' beim Praefix 'pumpe' liess den Zuhoerer die eigenen
+ * Veroeffentlichungen als Watt lesen: 25 Echozeilen -> 331 neue Datagramme
+ * (Pruefbericht mqtt B4). Rueckgabe: Liste "<kennung>: <filter> -> <praefix>/".
+ */
+function pw_quelle_kollisionen($voll)
+{
+    $aus = array();
+    $liste = isset($voll['pumpen']) && is_array($voll['pumpen']) ? $voll['pumpen'] : array();
+    $praefixe = array();
+    foreach ($liste as $p) {
+        if (is_array($p)) { $praefixe[] = pw_mqtt_thema_saeubern(isset($p['mqtt_topic']) ? $p['mqtt_topic'] : 'pumpe'); }
+    }
+    foreach ($liste as $p) {
+        if (!is_array($p)) { continue; }
+        $f = trim((string) (isset($p['quelle_topic']) ? $p['quelle_topic'] : ''));
+        if ($f === '') { continue; }
+        foreach (array_unique($praefixe) as $pr) {
+            if (pw_filter_ueberlappt($f, $pr . '/+')) {
+                $aus[] = (isset($p['id']) ? (string) $p['id'] : '?') . ': ' . $f . ' -> ' . $pr . '/';
+            }
+        }
+    }
+    return $aus;
+}
+
+/** Die eigenen Praefixe aller Pumpen - fuer den Zuhoerer (B4). */
+function pw_eigene_praefixe($voll)
+{
+    $aus = array();
+    foreach (isset($voll['pumpen']) && is_array($voll['pumpen']) ? $voll['pumpen'] : array() as $p) {
+        if (is_array($p)) { $aus[] = pw_mqtt_thema_saeubern(isset($p['mqtt_topic']) ? $p['mqtt_topic'] : 'pumpe'); }
+    }
+    return array_values(array_unique($aus));
+}
+
+/**
+ * Das Lebenszeichen, wenn der Datenordner nicht beschreibbar ist (C5).
+ * status_ok=0, dreimal (Alarmweg), nichts wird geschrieben.
+ */
+function pw_lebenszeichen_stoerung($cfg, $jetzt)
+{
+    $st = pw_stand(isset($cfg['id']) ? (string) $cfg['id'] : null);
+    $leben = array(
+        'status_ok'        => 0,
+        'status_ts'        => (int) $jetzt,
+        'status_zaehler'   => ((int) pw_zahl(isset($st['status_zaehler']) ? $st['status_zaehler'] : -1, -1.0) + 1) % 1000,
+        'status_quelle_ts' => (int) pw_zahl(isset($st['quelle_ts']) ? $st['quelle_ts'] : 0, 0.0),
+    );
+    $folge = array('status_ok', 'status_ts', 'status_zaehler', 'status_quelle_ts');
+    for ($i = 1; $i < PW_ALARM_WIEDERHOLUNG; $i++) { $folge[] = 'status_ok'; }
+    list($v, $f) = pw_mqtt_publish($leben, $cfg, $folge);
+    return array($v, $f);
+}
+
+/** Wo steht der Minutentakt? (O13) Rueckgabe array(1|0|2, Text). */
+function pw_cron_lage()
+{
+    $p = pw_paths();
+    $orte = ($p['home'] !== '') ? (glob($p['home'] . '/system/cron/cron.*/' . $p['plugin']) ?: array()) : array();
+    if ($orte) {
+        return array(1, substr($orte[0], strlen($p['home']) + 1));
+    }
+    if (is_file($p['home'] . '/bin/plugins/' . $p['plugin'] . '/pw_takt.php')) {
+        return array(0, pw_t('PRUEF.CRON_FEHLT'));
+    }
+    if (is_file(dirname(dirname(__DIR__)) . '/cron/cron.01min')) {
+        return array(1, 'cron/cron.01min');
+    }
+    return array(2, '');
+}
+
+/* ---------------- B9: retained Themen am Broker abraeumen ---------------- */
+
+/** Wo die frueher benutzten Praefixe liegen (B9). */
+function pw_mqtt_praefixe_datei()
+{
+    return pw_paths()['datadir'] . '/mqtt_praefixe.json';
+}
+
+/** Die je benutzten Praefixe, nur in der Form eines Themas. */
+function pw_mqtt_praefixe_gemerkt()
+{
+    $f = pw_mqtt_praefixe_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    $aus = array();
+    foreach (is_array($d) ? $d : array() as $p) {
+        if (is_string($p) && strlen($p) <= 64 && preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$#', $p)) {
+            $aus[$p] = true;
+        }
+    }
+    return array_keys($aus);
+}
+
+/** Ein Praefix in die Liste aufnehmen. preupgrade.sh legt die Liste mit dem Bestand beiseite. */
+function pw_mqtt_praefix_merken($praefix)
+{
+    $praefix = (string) $praefix;
+    if (strlen($praefix) > 64 || !preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$#', $praefix)) { return false; }
+    $l = pw_mqtt_praefixe_gemerkt();
+    if (in_array($praefix, $l, true)) { return true; }
+    $l[] = $praefix;
+    return pw_datei_schreiben(pw_mqtt_praefixe_datei(), json_encode(array_values(array_slice($l, -20))), 0644);
+}
+
+/**
+ * Den Broker fragen, welche der Themen er zurueckbehaelt - und sie auf
+ * Wunsch auf DERSELBEN Verbindung loeschen (B9).
+ *
+ * MQTT 3.1.1 von Hand: CONNECT, SUBSCRIBE (QoS 0), bei $leeren
+ * UNSUBSCRIBE, je belegtem Thema PUBLISH mit leerer, zurueckbehaltener
+ * Nutzlast, PINGREQ als Schranke, DISCONNECT. Bauform
+ * oc_mqtt_behalten_liste() (Spotpreis-Octopus 1.1.16), dort am Geraet
+ * belegt: der UDP-Eingang des Gateways verwirft unter Last Loeschungen,
+ * TCP nicht. Das Kennwort steht nur im CONNECT-Paket.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true),
+ *                 'geleert' => array(thema)).
+ */
+function pw_mqtt_behalten_liste(array $themen, $leeren = false)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array(), 'geleert' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) { $aus['lage'] = 'ok'; return $aus; }
+    $b = pw_broker();
+    $host = trim((string) $b['host']);
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $b['port'];
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = pw_optionswert($b['user']);
+    $kennwort = pw_optionswert($b['pass']);
+
+    set_error_handler(function () { return true; });
+    $s = stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    restore_error_handler();
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    $senden = function ($roh) use ($s) {
+        $n = @fwrite($s, $roh);
+        return is_int($n) && $n === strlen($roh);
+    };
+
+    $flags = 0x02;
+    $nutz = $zk('pwrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if ($senden(chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz)) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+            $senden(chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    /* Ab 0x80 abgelehnt (etwa durch eine ACL) - dann gilt
+                     * nichts als gelesen (Bauform Beschattungswaechter 0.9.21). */
+                    $rc = (string) substr($pk[1], 2);
+                    if (strlen($rc) !== count($soll)) { break; }
+                    $abgelehnt = false;
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
+                    $bestaetigt = true;
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                        if (count($aus['belegt']) === count($soll)) { break; }
+                    }
+                }
+            }
+            if ($bestaetigt || $aus['belegt']) { $aus['lage'] = 'ok'; }
+            if ($leeren && $aus['lage'] === 'ok' && $aus['belegt']) {
+                $unsub = pack('n', 2);
+                foreach (array_keys($soll) as $t) { $unsub .= $zk($t); }
+                $senden(chr(0xA2) . $laenge(strlen($unsub)) . $unsub);
+                foreach (array_keys($aus['belegt']) as $t) {
+                    $rumpf = $zk($t);
+                    if ($senden(chr(0x31) . $laenge(strlen($rumpf)) . $rumpf)) { $aus['geleert'][] = $t; }
+                }
+                $senden(chr(0xC0) . chr(0));
+                $schranke = microtime(true) + 3.0;
+                while (microtime(true) < $schranke) {
+                    $pk = $paket();
+                    if ($pk === null || ($pk[0] >> 4) === 13) { break; }
+                }
+            }
+        }
+        $senden(chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Die retained Themen der Linie unter EINEM Praefix leeren (B9).
+ *
+ * Nur eigene Themen (pw_retain_liste()), nie ein fremdes unter demselben
+ * Praefix. Weg: der Broker selbst, Runde fuer Runde nachgelesen. Nur wenn
+ * er nicht zu fragen ist, der UDP-Eingang des Gateways ("retain <thema> "
+ * mit leerer Nutzlast) - ohne Beleg, und die Meldung sagt das.
+ *
+ * Rueckgabe array('rc' => 0|1|2, 'weg' => 'tcp'|'udp'|'-', 'offen' => Liste,
+ * 'geleert' => Anzahl, 'zeilen' => Meldungen <OK>/<INFO>/<WARNING>).
+ */
+function pw_mqtt_praefix_leeren($praefix, $runden = 3, $pause = 1.0)
+{
+    $praefix = (string) $praefix;
+    $alle = array();
+    foreach (pw_retain_liste() as $t) { $alle[] = $praefix . '/' . $t; }
+    $n = count($alle);
+    $erg = array('rc' => 0, 'weg' => 'tcp', 'offen' => array(), 'geleert' => 0, 'zeilen' => array());
+    $offen = $alle;
+    $gefragt = false;
+    $bestaetigt = false;
+    for ($r = 1; $r <= max(1, (int) $runden); $r++) {
+        if ($r > 1) { usleep((int) (max(0.1, (float) $pause) * 1000000)); }
+        $f = pw_mqtt_behalten_liste($offen, true);
+        if ($f['lage'] !== 'ok') { break; }
+        $gefragt = true;
+        $erg['geleert'] += count($f['geleert']);
+        $offen = array_keys($f['belegt']);
+        if (!$offen) { $bestaetigt = true; break; }
+    }
+    if ($gefragt && !$bestaetigt) {
+        usleep(300000);
+        $f = pw_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $offen = array_keys($f['belegt']);
+            $bestaetigt = !$offen;
+        } else {
+            $gefragt = false;
+        }
+    }
+    if ($gefragt && $bestaetigt) {
+        $erg['zeilen'][] = $erg['geleert'] > 0
+            ? '<OK> MQTT: ' . $erg['geleert'] . ' retained Themen unter ' . $praefix
+              . '/ direkt am Broker geloescht; der Broker bestaetigt: keines der ' . $n
+              . ' Themen steht mehr retained.'
+            : '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen unter ' . $praefix
+              . '/ steht retained - nichts zu leeren.';
+        return $erg;
+    }
+    if ($gefragt) {
+        $erg['rc'] = 1;
+        $erg['offen'] = $offen;
+        $erg['zeilen'][] = '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch retained im Broker ('
+            . implode(', ', array_slice($offen, 0, 6)) . '). Von Hand: mosquitto_pub -r -n -t <thema>';
+        return $erg;
+    }
+    $erg['weg'] = 'udp';
+    $g = pw_mqtt_gateway_info();
+    if (!$g['udpport']) {
+        $erg['rc'] = 2;
+        $erg['weg'] = '-';
+        $erg['zeilen'][] = '<INFO> MQTT: der Broker liess sich nicht befragen, und in der general.json steht '
+            . 'kein UDP-Eingang des Gateways - retained Themen unter ' . $praefix . '/ wurden nicht geleert.';
+        return $erg;
+    }
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $g['udpport'], $errno, $errstr, 2);
+    if (!$strom) {
+        $erg['rc'] = 1;
+        $erg['zeilen'][] = '<WARNING> MQTT: weder der Broker noch der UDP-Eingang des Gateways waren '
+            . 'erreichbar - retained Themen unter ' . $praefix . '/ wurden nicht geleert.';
+        return $erg;
+    }
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden); $r++) {
+        if ($r > 1) { usleep((int) (max(0.1, (float) $pause) * 1000000)); }
+        foreach ($alle as $t) {
+            if ($datagramme > 0) { usleep(PW_UDP_PAUSE_US); }
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+        }
+    }
+    fclose($strom);
+    $erg['zeilen'][] = '<INFO> MQTT: der Broker liess sich nicht befragen - ' . $n . ' Themen unter ' . $praefix
+        . '/ mit leerer Nutzlast an den UDP-Eingang ' . (int) $g['udpport'] . ' des Gateways gesendet ('
+        . $datagramme . ' Datagramme), nicht nachgelesen. Was stehen bleibt, laesst sich mit '
+        . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.';
+    return $erg;
+}
+
+/**
+ * Aus der Deinstallation (bin/pw_takt.php --mqtt-leeren): unter JEDEM je
+ * benutzten Praefix abraeumen - die Praefixe aller Pumpen und die gemerkten
+ * (B9). Liest die Konfiguration ohne Selbstheilung, schreibt nichts.
+ * Rueckgabe 0 geleert oder nichts zu leeren, 1 es steht noch etwas bzw.
+ * nicht nachpruefbar, 2 nicht moeglich.
+ */
+function pw_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    /* Die Praefixe der Konfiguration nur, wenn es eine gibt: die
+     * Deinstallation entfernt sie VOR dem Leeren (sonst schriebe eine
+     * Anlieferung aus Loxone die Themen gleich wieder hinein) und hat die
+     * Praefixe vorher mit --mqtt-merken festgehalten. Ohne Datei ergaebe die
+     * Wanderung eine Werkspumpe "pumpe" - die gehoert niemandem. */
+    $liste = array();
+    if (pw_inhalt_oder_null(pw_paths()['config']) !== null) {
+        $liste = pw_eigene_praefixe(pw_config(false));
+    }
+    foreach (pw_mqtt_praefixe_gemerkt() as $p) {
+        if (!in_array($p, $liste, true)) { $liste[] = $p; }
+    }
+    $rc = 0;
+    foreach ($liste as $p) {
+        $e = pw_mqtt_praefix_leeren($p, $runden, $pause);
+        foreach ($e['zeilen'] as $z) { echo $z . "\n"; }
+        $rc = max($rc, (int) $e['rc']);
+    }
+    return $rc;
+}
+
+/**
+ * Die Oberflaeche raeumt ein Praefix ab (B9): Praefixwechsel im Reiter MQTT,
+ * eine entfernte Pumpe, eine zurueckgespielte Sicherung. Rueckgabe
+ * array(Meldungen, Fehler) in der Sprache der Oberflaeche; das Protokoll
+ * bekommt die Zeilen von pw_mqtt_praefix_leeren().
+ */
+function pw_ui_praefix_leeren($praefix)
+{
+    $e = pw_mqtt_praefix_leeren($praefix, 3, 0.5);
+    $m = array();
+    $f = array();
+    if ($e['weg'] === 'tcp' && $e['rc'] === 0) {
+        $m[] = $e['geleert'] > 0 ? sprintf(pw_t('MQTT.ALT_GELEERT'), $praefix, $e['geleert'])
+                                 : sprintf(pw_t('MQTT.ALT_LEER'), $praefix);
+    } elseif ($e['weg'] === 'tcp') {
+        $f[] = sprintf(pw_t('MQTT.ALT_OFFEN'), $praefix, count($e['offen']), implode(', ', $e['offen']));
+    } elseif ($e['weg'] === 'udp' && $e['rc'] === 0) {
+        $m[] = sprintf(pw_t('MQTT.ALT_UDP'), $praefix);
+    } else {
+        $f[] = sprintf(pw_t('MQTT.ALT_NICHT'), $praefix);
+    }
+    foreach ($e['zeilen'] as $z) { pw_log('Praefixwechsel: ' . preg_replace('/^<[A-Z]+> /', '', $z)); }
+    return array($m, $f);
+}
+
+/* ---------------- C4: Waisen des Zuhoerers ---------------- */
+
+/**
+ * Die Marke, die der Zuhoerer seinem mosquitto_sub in die Umgebung legt.
+ * Eine Waise (ihr Zuhoerer ist tot) ist daran und an ihrem Besitzer zu
+ * erkennen - nicht am Namen, nicht an der Befehlszeile.
+ */
+function pw_zuhoerer_marke()
+{
+    return 'PW_ZUHOERER=' . pw_paths()['datadir'];
+}
+
+/** Traegt der Prozess die Marke und gehoert er uns? */
+function pw_ist_zuhoerer_kind($pid)
+{
+    $pid = (int) $pid;
+    if ($pid <= 1 || $pid === (int) getmypid()) { return false; }
+    $f = '/proc/' . $pid . '/environ';
+    $roh = is_readable($f) ? (string) @file_get_contents($f) : '';
+    if ($roh === '' || !in_array(pw_zuhoerer_marke(), explode("\0", $roh), true)) { return false; }
+    $b = @fileowner('/proc/' . $pid);
+    return $b !== false && in_array((int) $b, pw_dienst_uids(), true);
+}
+
+/** Der Elternprozess laut /proc/<pid>/stat, 0 wenn unbekannt. */
+function pw_elternprozess($pid)
+{
+    $f = '/proc/' . (int) $pid . '/stat';
+    $roh = is_readable($f) ? (string) @file_get_contents($f) : '';
+    $z = strrpos($roh, ')');
+    if ($z === false) { return 0; }
+    $teile = preg_split('/\s+/', trim(substr($roh, $z + 1)));
+    return isset($teile[1]) ? (int) $teile[1] : 0;
+}
+
+/**
+ * Kinder eines Zuhoerers, deren Zuhoerer nicht mehr lebt (C4, 1.0.4).
+ *
+ * Bis 1.0.3 vererbte der Zuhoerer seine Dateisperre an mosquitto_sub, und
+ * nach stop, kill -9 oder einer Konfigurationsaenderung hielt die Waise sie:
+ * jeder Neustart meldete "Es laeuft bereits ein Zuhoerer." (Pruefbericht
+ * code C4). Seit 1.0.4 erbt das Kind die Sperre nicht mehr; eine Waise
+ * gibt es trotzdem, bis sie beim naechsten Schreibversuch an SIGPIPE stirbt.
+ */
+function pw_zuhoerer_waisen()
+{
+    $aus = array();
+    if (!is_dir('/proc')) { return $aus; }
+    $dienste = pw_dienst_pids();
+    $d = @opendir('/proc');
+    if ($d === false) { return $aus; }
+    while (($e = readdir($d)) !== false) {
+        if (!preg_match('/^[0-9]+$/', $e)) { continue; }
+        if (!pw_ist_zuhoerer_kind((int) $e)) { continue; }
+        if (in_array(pw_elternprozess((int) $e), $dienste, true)) { continue; }
+        $aus[] = (int) $e;
+    }
+    closedir($d);
+    sort($aus);
+    return $aus;
+}
+
+/** Waisen beenden - vor JEDEM Signal neu geprueft. Rueckgabe array(beendet, uebrig). */
+function pw_waisen_beenden()
+{
+    $w = pw_zuhoerer_waisen();
+    if (!$w) { return array(array(), array()); }
+    $signal = function ($pid, $nr) {
+        if (!pw_ist_zuhoerer_kind($pid)) { return; }
+        if (function_exists('posix_kill')) { @posix_kill($pid, $nr); }
+        elseif (function_exists('exec')) { @exec('kill -' . (int) $nr . ' ' . (int) $pid . ' 2>/dev/null'); }
+    };
+    foreach ($w as $pid) { $signal($pid, 15); }
+    for ($i = 0; $i < 30; $i++) {
+        usleep(100000);
+        if (!array_filter($w, 'pw_ist_zuhoerer_kind')) { return array($w, array()); }
+    }
+    foreach ($w as $pid) { $signal($pid, 9); }
+    usleep(300000);
+    return array($w, array_values(array_filter($w, 'pw_ist_zuhoerer_kind')));
+}
+
+/* ---------------- O1: die Einmalmeldung der Oberflaeche ---------------- */
+
+/**
+ * Nach jedem POST leitet die Oberflaeche mit 303 um (Regeln/04); das
+ * Ergebnis reist in dieser Datei - Datenordner, 0600, 120 s gueltig, nur
+ * beim GET gelesen und dabei geloescht. Die Texte werden als KLARTEXT
+ * abgelegt und bei der Ausgabe maskiert (Regeln/04, "Was ueber eine
+ * Einmalmeldung hinausgeht, laeuft durch e()"); Aktionstoken und
+ * Formulargeheimnis stehen nie darin.
+ */
+function pw_meldung_datei()
+{
+    return pw_paths()['datadir'] . '/einmalmeldung.json';
+}
+
+function pw_meldung_ablegen($daten)
+{
+    $c = pw_config(false);
+    $geheim = array();
+    foreach (array('aktionstoken', 'formgeheim') as $k) {
+        if (isset($c[$k]) && is_string($c[$k]) && $c[$k] !== '') { $geheim[] = $c[$k]; }
+    }
+    $f = pw_formtoken(pw_pumpe($c));
+    if ($f !== '') { $geheim[] = $f; }
+    $klar = function ($s) use ($geheim) {
+        $s = trim(html_entity_decode(strip_tags((string) $s), ENT_QUOTES, 'UTF-8'));
+        foreach ($geheim as $g) { $s = str_replace($g, '***', $s); }
+        return $s;
+    };
+    $aus = array('zeit' => time());
+    foreach (array('meldungen', 'fehler') as $k) {
+        $aus[$k] = array();
+        foreach (isset($daten[$k]) && is_array($daten[$k]) ? $daten[$k] : array() as $z) {
+            $aus[$k][] = $klar($z);
+        }
+    }
+    $aus['testausgabe'] = isset($daten['testausgabe']) ? (string) $daten['testausgabe'] : '';
+    foreach ($geheim as $g) { $aus['testausgabe'] = str_replace($g, '***', $aus['testausgabe']); }
+    $js = json_encode($aus, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return is_string($js) && pw_datei_schreiben(pw_meldung_datei(), $js, 0600);
+}
+
+function pw_meldung_abholen()
+{
+    $f = pw_meldung_datei();
+    clearstatcache(true, $f);
+    if (!is_file($f)) { return null; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) { return null; }
+    return $d;
 }

@@ -42,9 +42,20 @@ chmod 600 "$PCONFIG/pumpenwacht.json" 2>/dev/null
 # Sie liegt NEBEN dem Ordner, nicht darin: LoxBerry entfernt
 # config/plugins/<ordner>/ bei Deinstallation und Neuinstallation, und eine
 # Sicherung im Ordner staerbe genau in dem Fall mit, fuer den es sie gibt.
+#
+# I2 (1.0.4, Entscheidung 1): zurueckgespielt wird NUR bei einer
+# Aktualisierung - erkannt an der Marke aus preupgrade.sh, ohne
+# Altersvergleich. Bei einer Neuinstallation hat preinstall.sh eine
+# liegengebliebene Zweitschrift schon nach .alt gelegt. Bis 1.0.3 kam sie
+# auch bei einer Neuinstallation zurueck (Pruefbericht installer, Fall N).
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/pumpenwacht.json"
-if [ -f "$BK" ]; then
+UPGRADE=0
+[ -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ] && UPGRADE=1
+if [ -f "$BK" ] && [ "$UPGRADE" != "1" ]; then
+    echo "<WARNING> Neuinstallation: die Zweitschrift $BK wird nicht eingespielt"
+    echo "<WARNING> (preinstall.sh konnte sie nicht nach .alt legen) - bitte von Hand entfernen."
+elif [ -f "$BK" ]; then
     INHALT=$(cat "$CF" 2>/dev/null)
     if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
         if cp -p "$BK" "$CF"; then
@@ -97,6 +108,15 @@ else
     echo "<FAIL> bin/pw_takt.php fehlt - ohne ihn merkt niemand, wenn der Zwischenzaehler ausfaellt."
 fi
 
+# I4 (1.0.4): nach einer Aktualisierung kein Ersteinrichtungstext
+# (Regeln/06). Bis 1.0.3 riet das Protokoll auch nach einem Update, das
+# Pumpenmodell zu waehlen - und damit gemessene eigene Schwellen mit
+# Datenblattwerten zu ueberschreiben (Pruefbericht installer 5).
+if [ "$UPGRADE" = "1" ]; then
+    echo "<OK> Aktualisierung abgeschlossen - es ist nichts weiter zu tun. Einstellungen,"
+    echo "<OK> Aktionstoken, Zaehler und Tagesbilanz bleiben (postupgrade.sh spielt sie zurueck)."
+    exit 0
+fi
 echo "<OK> Installation abgeschlossen."
 echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche:"
 echo "<INFO>  1. Reiter Einstellungen: Pumpenmodell waehlen - die Schwellen"

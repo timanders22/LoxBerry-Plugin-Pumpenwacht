@@ -97,16 +97,38 @@ LOG="REPLACELBPLOGDIR/pumpenwacht.log"
 # Der Takt unten behaelt "$LOG": er laeuft eine Sekunde und ist wieder weg,
 # und was er meldet, gehoert ins Protokoll.
 STARTLOG="REPLACELBPLOGDIR/pumpenwacht_start.log"
+# C4 (1.0.4): hierher kommt eine Zeile, wenn ein Start des Zuhoerers mit
+# einem Rueckgabewert ungleich 0 endet - belegte Sperre, fehlendes
+# mosquitto_sub, abgelehnte Anmeldung (mosquitto_sub endet dann selbst).
+# Bis 1.0.3 ging "Es laeuft bereits ein Zuhoerer." nach /dev/null, und
+# das Startprotokoll wurde beim naechsten Versuch geleert: eine Waise, die
+# jeden Neustart verhinderte, hinterliess keine einzige Zeile
+# (Pruefbericht code C4). Dieselbe Zeile zweimal hintereinander wird nur
+# einmal geschrieben.
+CRONERR="REPLACELBPLOGDIR/cron.err"
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
 
 # 1. Waechter. "status" gibt 0 zurueck, wenn er laeuft.
 if [ -f "REPLACELBPBINDIR/pw_dienst.php" ]; then
     if ! php "REPLACELBPBINDIR/pw_dienst.php" status >/dev/null 2>&1; then
-        # nohup und &: der Cron soll nicht auf ihn warten.
+        # Im Hintergrund: der Cron soll nicht auf ihn warten.
         # Vor jedem Start geleert - hierher kommt nur, wer wirklich startet,
         # also traegt die Datei genau einen Lauf.
         : > "$STARTLOG"
-        nohup php "REPLACELBPBINDIR/pw_dienst.php" >/dev/null 2>>"$STARTLOG" &
+        # Eine Unterschale wartet auf den Zuhoerer und schreibt seinen
+        # Rueckgabewert nach cron.err, wenn er nicht 0 ist. SIGHUP wird
+        # ignoriert wie bisher mit nohup; die Ausgaben der Unterschale
+        # gehen nicht an den Cron, damit er nicht auf sie wartet.
+        (
+            trap '' HUP
+            php "REPLACELBPBINDIR/pw_dienst.php" >/dev/null 2>>"$STARTLOG"
+            RC=$?
+            if [ "$RC" -ne 0 ]; then
+                ZEILE="Zuhoerer endete mit Rueckgabewert $RC: $(tail -n 3 "$STARTLOG" 2>/dev/null | tr '\n' ' ')"
+                LETZTE=$(tail -n 1 "$CRONERR" 2>/dev/null | cut -d' ' -f3-)
+                [ "$LETZTE" = "$ZEILE" ] || echo "$(date '+%Y-%m-%d %H:%M:%S') $ZEILE" >> "$CRONERR"
+            fi
+        ) </dev/null >/dev/null 2>&1 &
     fi
 fi
 

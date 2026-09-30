@@ -381,6 +381,12 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
         'quittung'      => !empty($alt['quittung']) ? 1 : 0,
         'anfrage_seit'  => pw_zahl(isset($alt['anfrage_seit']) ? $alt['anfrage_seit'] : 0, 0.0),
         'zeitsprung'    => 0,
+        /* C3 (1.0.4): der Stand VOR einer Messluecke - Zustand (0/1), der
+         * Zeitpunkt, ab dem nichts mehr gemessen war, und die Laufzeit bis
+         * dahin. -1 / 0 heisst: es liegt keine Luecke an. */
+        'vor_luecke'    => isset($alt['vor_luecke']) ? (int) $alt['vor_luecke'] : -1,
+        'luecke_ab'     => pw_zahl(isset($alt['luecke_ab']) ? $alt['luecke_ab'] : 0, 0.0),
+        'luecke_lauf_s' => pw_zahl(isset($alt['luecke_lauf_s']) ? $alt['luecke_lauf_s'] : 0, 0.0),
     );
 
     /* Ein Uhrsprung wird GEMELDET, nicht verrechnet. Der Reiter Test zeigt
@@ -490,11 +496,59 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
      * Kernselbsttest hat das sofort gemeldet, 19 statt 20 Starts. */
     $luecke = ($laeuft < 0 || ($alt_laeuft < 0 && $vorher > 0));
     if ($laeuft !== $alt_laeuft && $luecke) {
-        /* In die Luecke hinein oder aus ihr heraus: fuer die MESSUNG
-         * beginnt der Lauf neu. Was waehrend der Luecke geschah, weiss
-         * niemand - es wird weder gezaehlt noch geschaetzt. */
-        $neu['seit'] = $jetzt;
-        $neu['lauf_s'] = 0.0;
+        /* EINE LUECKE UNTERBRICHT DIE MESSUNG, NICHT DIE FRIST (C3, 1.0.4).
+         *
+         * Bis 1.0.3 setzte jeder Uebergang in die Luecke hinein und aus ihr
+         * heraus seit und lauf_s zurueck. Gemessen (Pruefbericht code C3):
+         * sechs Minuten ohne Messwert nach 24 h Stillstand -> ruht_s sprang
+         * von 86521 auf 61, der Ruhe-Alarm kam bis Stunde 72 nicht; ein
+         * Dauerlauf mit einer 6-min-Luecke alle 25 min stellte in 6 h nie
+         * "dauerlauf". Beides sind die Alarme einer Sumpfpumpe.
+         *
+         * Jetzt: in der Luecke ist der Zustand "unbekannt" (laeuft -1,
+         * Befund still - Entscheidung 12), aber der Stand davor wird gemerkt.
+         * Kommt derselbe Zustand zurueck, laufen seit (Stillstand) und lauf_s
+         * (Lauf, samt der Lueckenzeit) weiter. Kommt ein anderer zurueck,
+         * wird wie bisher nichts gebucht - kein Start, kein Laufende -, aber
+         * nach einem Lauf gilt fuer die Ruhefrist der letzte GESEHENE Lauf. */
+        if ($laeuft < 0) {
+            if ($alt_laeuft >= 0) {
+                $neu['vor_luecke'] = $alt_laeuft;
+                $neu['luecke_ab'] = $anrechnen_ab > 0 ? $anrechnen_ab : $jetzt;
+                $neu['luecke_lauf_s'] = $neu['lauf_s'];
+            }
+        } else {
+            $war = (int) $neu['vor_luecke'];
+            $ab = (float) $neu['luecke_ab'];
+            $ab_gilt = ($ab > 0 && $ab <= $jetzt);
+            if ($ab_gilt && $war === $laeuft) {
+                if ($laeuft === 1) {
+                    /* Die Lueckenzeit zaehlt als Laufzeit - die Pumpe lief
+                     * davor und danach. lauf_s ist die Groesse, an der der
+                     * Dauerlauf haengt; die Tageszahlen bekommen denselben
+                     * Anteil (hoechstens eine Stunde, wie jeder Schritt),
+                     * ab Mitternacht, wenn die Luecke darueber ging. */
+                    $neu['lauf_s'] = (float) $neu['luecke_lauf_s'] + min(86400.0, $jetzt - $ab);
+                    $von = ($tagbeginn > $ab && $tagbeginn <= $jetzt) ? $tagbeginn : $ab;
+                    $zu = max(0.0, min(3600.0, $jetzt - $von));
+                    $neu['lauf_s_tag'] += $zu;
+                    $neu['lauf_s_gesamt'] += $zu;
+                }
+                /* seit bleibt stehen - die Frist laeuft weiter. */
+            } elseif ($ab_gilt && $war === 1 && $laeuft === 0) {
+                /* Der Lauf endete irgendwann in der Luecke. Fuer die Ruhefrist
+                 * zaehlt der letzte gesehene Lauf - lieber einmal zu frueh
+                 * melden als einmal zu spaet. */
+                $neu['seit'] = $ab;
+                $neu['lauf_s'] = 0.0;
+            } else {
+                $neu['seit'] = $jetzt;
+                $neu['lauf_s'] = 0.0;
+            }
+            $neu['vor_luecke'] = -1;
+            $neu['luecke_ab'] = 0.0;
+            $neu['luecke_lauf_s'] = 0.0;
+        }
     } elseif ($laeuft !== $alt_laeuft) {
         if ($laeuft === 1) {
             $starts[] = $jetzt;
@@ -502,10 +556,16 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
             $neu['starts_gesamt']++;
             $neu['anfrage_seit'] = 0.0;   // die Anforderung ist erfuellt
             $neu['lauf_s'] = 0.0;
-        } else {
+        } elseif ($alt_laeuft === 1) {
             /* Ein Lauf ist zu Ende - seine Dauer wird festgehalten. Sie
              * kommt aus der SUMMIERTEN Laufzeit, nicht mehr aus
-             * (jetzt - seit): sonst zaehlte ein Uhrsprung mit. */
+             * (jetzt - seit): sonst zaehlte ein Uhrsprung mit.
+             *
+             * NUR wenn vorher gelaufen wurde (B6, 1.0.4). Bis 1.0.3 kam
+             * auch der ERSTE Messwert ueberhaupt hierher, wenn die Pumpe
+             * stand: letzter_lauf_s wurde 0 statt -1 ("noch nie"), und
+             * laengster_tag die Sekunden seit Mitternacht - gemessen 36000
+             * um 10:00 UTC. */
             $dauer = $neu['lauf_s']
                    + ($anrechnen_ab > 0 ? $gemessen($anrechnen_ab, $jetzt) : 0.0);
             $neu['letzter_lauf_s'] = $dauer;
@@ -531,6 +591,8 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
                 $neu['lauf_s_gesamt'] += $zu;
             }
         }
+        /* Sonst: der erste Messwert ueberhaupt, und die Pumpe steht - nur
+         * der Beginn der Buchfuehrung. */
         $neu['seit'] = $jetzt;
     }
     $neu['starts'] = pw_starts_stutzen($starts, $jetzt, 172800, pw_starts_deckel($cfg));
@@ -552,6 +614,12 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
     /* Wie lange steht die Pumpe schon? $neu['seit'] traegt beim Stillstand
      * den Zeitpunkt, an dem der letzte Lauf endete - der Zustandswechsel
      * setzt ihn. Bei laufender Pumpe ist die Frage gegenstandslos. */
+    /* Eine lange Luecke im Lauf rechnet lauf_s bis zu einem Tag an, die
+     * Tageszahlen hoechstens eine Stunde. Der laengste Lauf des Tages
+     * bleibt trotzdem nie groesser als die Laufzeit des Tages (C3). */
+    if ($neu['laengster_tag'] > $neu['lauf_s_tag']) {
+        $neu['laengster_tag'] = $neu['lauf_s_tag'];
+    }
     $ruhe_seit = ($laeuft === 0 && $neu['seit'] > 0)
                ? max(0.0, $jetzt - $neu['seit']) : -1.0;
     list($befund, $beiwert) = pw_befund(
@@ -1061,6 +1129,70 @@ function pw_selbsttest($ausgabe = true)
                      $cfgh, $sh, $td + 60 + 172800);
     $pruef('GEGENPROBE Hauswasserwerk: derselbe Befund', $sh['befund'], PW_RUHT);
     $pruef('GEGENPROBE Hauswasserwerk: und es sperrt', $sh['sperre'], 1);
+
+    /* ---- Luecken setzen Fristen nicht zurueck (C3, 1.0.4) ----
+     *
+     * Bis 1.0.3 begann die Ruhefrist nach jeder Messluecke neu, und ein
+     * flackernder Zaehler verhinderte den Dauerlauf-Befund auf Dauer. */
+    $cfgk = array('an_w' => 20, 'trocken_w' => 0, 'ueberlast_w' => 0,
+                  'dauerlauf_s' => 1800, 'starts_h' => 0, 'stale_s' => 180,
+                  'ruht_s' => 172800, 'art' => 'entwaesserung');
+    $tk = 6000000.0;
+    $sk = array();
+    $sk = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgk, $sk, $tk);
+    $sk = pw_schritt(array('watt' => 0, 'tag' => '2026-09-01'), $cfgk, $sk, $tk + 60);
+    $ende_lauf = $sk['seit'];
+    for ($i = 1; $i <= 6; $i++) {
+        $sk = pw_schritt(array('watt' => null, 'tag' => '2026-09-01'), $cfgk, $sk, $tk + 60 + 3600 * 24 + 60 * $i);
+    }
+    $pruef('Luecke im Stillstand: waehrenddessen unbekannt', $sk['laeuft'], -1);
+    $sk = pw_schritt(array('watt' => 0, 'tag' => '2026-09-02'), $cfgk, $sk, $tk + 60 + 3600 * 24 + 420);
+    $pruef('Luecke im Stillstand: die Ruhefrist laeuft weiter (seit bleibt)', $sk['seit'], $ende_lauf);
+    $sk = pw_schritt(array('watt' => 0, 'tag' => '2026-09-03'), $cfgk, $sk, $tk + 60 + 172800);
+    $pruef('Luecke im Stillstand: der Ruhebefund kommt nach 48 h wie ohne Luecke', $sk['befund'], PW_RUHT);
+    /* GEGENPROBE: ein echter Lauf nach der Luecke setzt die Frist zurueck. */
+    $sk2 = pw_schritt(array('watt' => 300, 'tag' => '2026-09-03'), $cfgk, $sk, $tk + 60 + 172860);
+    $sk2 = pw_schritt(array('watt' => 0, 'tag' => '2026-09-03'), $cfgk, $sk2, $tk + 60 + 172920);
+    $pruef('GEGENPROBE echter Lauf: danach kein Ruhebefund', $sk2['befund'], PW_OK);
+
+    $sd = array(); $td = 7000000.0;
+    $sd = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgk, $sd, $td);
+    for ($m = 1; $m <= 40; $m++) {
+        $w = (($m % 25) >= 19) ? null : 300;
+        $sd = pw_schritt(array('watt' => $w, 'tag' => '2026-09-01'), $cfgk, $sd, $td + 60 * $m);
+        if ($m === 22) { $pruef('Lauf mit Luecke: in der Luecke unbekannt', $sd['laeuft'], -1); }
+    }
+    $pruef('Lauf mit Luecken alle 25 min: lauf_s laeuft ueber die Luecke weiter', $sd['lauf_s'], 2400);
+    $pruef('Lauf mit Luecken alle 25 min: der Dauerlauf-Befund kommt', $sd['befund'], PW_DAUERLAUF);
+    $pruef('Lauf mit Luecke: kein zusaetzlicher Start', $sd['starts_gesamt'], 1);
+    $pruef('Lauf mit Luecke: laengster nie groesser als die Tageslaufzeit',
+           $sd['laengster_tag'] <= $sd['lauf_s_tag'] ? 1 : 0, 1);
+
+    /* Nach einem Lauf, der in der Luecke endete, zaehlt die Ruhefrist ab dem
+     * letzten gesehenen Lauf - nicht ab dem Ende der Luecke. */
+    $se = array(); $te = 8000000.0;
+    $se = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgk, $se, $te);
+    $se = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgk, $se, $te + 60);
+    $se = pw_schritt(array('watt' => null, 'tag' => '2026-09-01'), $cfgk, $se, $te + 120);
+    $se = pw_schritt(array('watt' => 0, 'tag' => '2026-09-01'), $cfgk, $se, $te + 3720);
+    $pruef('Lauf endete in der Luecke: seit ist der letzte gesehene Lauf', $se['seit'], $te + 60);
+    $pruef('Lauf endete in der Luecke: kein erfundener letzter Lauf', $se['letzter_lauf_s'], -1);
+
+    /* ---- Der erste Wert ueberhaupt (B6, 1.0.4) ----
+     * Bis 1.0.3 lief er bei stehender Pumpe in den Zweig "Lauf zu Ende":
+     * laengster_tag = Sekunden seit Mitternacht, letzter_lauf_s = 0. */
+    $sf = pw_schritt(array('watt' => 0, 'tag' => '2026-09-30', 'tagbeginn' => 9000000.0),
+                     $cfgk, array(), 9000000.0 + 36000);
+    $pruef('erster Wert, Pumpe steht: laengster Lauf heute 0, nicht die Uhrzeit', $sf['laengster_tag'], 0);
+    $pruef('erster Wert, Pumpe steht: letzter Lauf -1 (noch nie)', $sf['letzter_lauf_s'], -1);
+    $pruef('erster Wert, Pumpe steht: kein Start', $sf['starts_gesamt'], 0);
+    /* GEGENPROBE: ein echtes Laufende setzt beide. */
+    $sf = pw_schritt(array('watt' => 300, 'tag' => '2026-09-30', 'tagbeginn' => 9000000.0),
+                     $cfgk, $sf, 9000000.0 + 36060);
+    $sf = pw_schritt(array('watt' => 0, 'tag' => '2026-09-30', 'tagbeginn' => 9000000.0),
+                     $cfgk, $sf, 9000000.0 + 36120);
+    $pruef('GEGENPROBE echtes Laufende: letzter Lauf 60 s', $sf['letzter_lauf_s'], 60);
+    $pruef('GEGENPROBE echtes Laufende: laengster Lauf heute 60 s', $sf['laengster_tag'], 60);
 
     if ($ausgabe) {
         echo sprintf("\nPumpenwacht-Kern %s: %d Faelle geprueft, %d Fehlschlaege.\n",

@@ -21,23 +21,61 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-pumpenwacht}"
-BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
-fi
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - es wurde NICHTS geloescht."; exit 1 ;;
+esac
 
-# Erst den Zuhoerer anhalten - sonst laeuft ein Prozess weiter, dessen
-# Plugin es nicht mehr gibt, und schreibt in Ordner, die gerade
-# verschwinden.
-# Gemeldet wird, WAS der Zuhoerer gesagt hat, nicht der Rueckgabewert von
-# "stop": der ist auch dann 0, wenn gar nichts lief. Bis 1.0.2 stand deshalb
-# "<OK> MQTT-Zuhoerer angehalten." auch dann im Installationsprotokoll, wenn
-# es nichts anzuhalten gab - und im gemessenen Fall (18.09.2026, Klasse F)
-# sogar dann, wenn ein FREMDER Vorgang beendet worden war.
+# ---------- Die Wurzel - gelesen, nicht geraten (I5, 1.0.4) ----------
+# Bis 1.0.3 ging der Rueckfall vom Ablageort nur zwei Ebenen hinauf; vom
+# Ablageort data/system/uninstall/ ergab das <home>/data. Und vor dem
+# rm -rf stand keine Pruefung, ob dort ueberhaupt ein LoxBerry liegt
+# (Pruefbericht installer). Jetzt gilt eine Wurzel nur mit config/plugins,
+# data/plugins UND config/system/general.json - erst das fuenfte Argument,
+# dann $LBHOMEDIR, dann aufwaerts vom Ablageort (Regeln/06). Ohne Wurzel wird
+# NICHTS geloescht.
+ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
+BASE="${ARGV5:-${LBHOMEDIR:-}}"
+if ! ist_wurzel "$BASE"; then
+    BASE=""
+    V=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    I=0
+    while [ -n "$V" ] && [ "$V" != "/" ] && [ "$I" -lt 8 ]; do
+        if ist_wurzel "$V"; then BASE="$V"; break; fi
+        V=$(dirname "$V")
+        I=$((I + 1))
+    done
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden (weder als fuenftes Argument"
+    echo "<WARNING> noch in \$LBHOMEDIR noch oberhalb dieses Skripts) - es wurde NICHTS geloescht."
+    exit 1
+fi
+PDATA="$BASE/data/plugins/$PFOLDER"
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+TAKT="$BASE/bin/plugins/$PFOLDER/pw_takt.php"
+
+# Als loxberry, nicht als root; stdin geschlossen, damit su nie wartet.
+als_loxberry() {
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' "$@")" </dev/null
+    else
+        "$@" </dev/null
+    fi
+}
+
+# Die Marke haelt den Minutentakt an, solange hier abgeraeumt wird - sonst
+# schickte er die retained Themen gleich wieder. Sie faellt am Ende.
+{ date +%s > "$MARKE"; } 2>/dev/null
+
+# Erst den Zuhoerer anhalten - samt einer Waise (C4, 1.0.4: bis 1.0.3 blieb
+# nach der Deinstallation ein angemeldetes mosquitto_sub stehen). Gemeldet
+# wird, WAS der Zuhoerer gesagt hat, nicht der Rueckgabewert von "stop".
 DIENST="$BASE/bin/plugins/$PFOLDER/pw_dienst.php"
 if [ -f "$DIENST" ]; then
-    AUSGABE=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" php "$DIENST" stop 2>/dev/null)
+    AUSGABE=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" timeout 30 php "$DIENST" stop 2>&1 </dev/null)
     if [ -n "$AUSGABE" ]; then
         echo "$AUSGABE" | sed 's/^/<INFO> /'
     else
@@ -46,6 +84,20 @@ if [ -f "$DIENST" ]; then
     fi
 fi
 
+# ---------- MQTT: die retained Themen der Linie abraeumen (B9, 1.0.4) ----------
+# Seit 1.0.4 gehen die Zustaende retained hinaus (Entscheidung 3). Sie blieben
+# sonst nach der Deinstallation im Broker stehen, und nach jedem Neustart von
+# Broker oder Gateway bekaeme der Miniserver sie wieder - von einem Plugin,
+# das es nicht mehr gibt. Abgeraeumt wird direkt am Broker ueber TCP und
+# nachgelesen, unter JEDEM je benutzten Praefix (Bauform Octopus 1.1.16);
+# der UDP-Eingang des Gateways ist nur der Rueckfall.
+# Reihenfolge: erst die Praefixe der Konfiguration vormerken, dann die
+# Konfiguration entfernen - ab da weist der Endpunkt jede Anlieferung aus
+# Loxone mit 403 ab und schreibt nichts mehr hinein -, dann leeren.
+if command -v php >/dev/null 2>&1 && [ -f "$TAKT" ]; then
+    als_loxberry env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 30 php "$TAKT" --mqtt-merken 2>&1 \
+        | sed 's/^/<INFO> /'
+fi
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 if [ -f "$BK" ]; then
     rm -f "$BK" && echo "<OK> Zweitschrift der Konfiguration entfernt ($BK)."
@@ -53,20 +105,32 @@ if [ -f "$BK" ]; then
 else
     echo "<INFO> Keine Zweitschrift vorhanden - nichts zu entfernen."
 fi
+# Die beiseitegelegte Zweitschrift einer frueheren Installation (preinstall.sh).
+if [ -f "$BK.alt" ]; then
+    rm -f "$BK.alt" && echo "<OK> Beiseitegelegte Zweitschrift entfernt ($BK.alt)."
+fi
+rm -f "$BASE/config/plugins/$PFOLDER/pumpenwacht.json" 2>/dev/null
+if command -v php >/dev/null 2>&1 && [ -f "$TAKT" ]; then
+    als_loxberry env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 90 php "$TAKT" --mqtt-leeren 2>&1
+else
+    echo "<INFO> PHP oder pw_takt.php fehlt - retained MQTT-Themen wurden nicht geleert."
+fi
 
-# Zustand, Tagesbilanz und Sperrdatei. Sie tragen kein Geheimnis, aber sie
-# gehoeren zu einem Plugin, das es nicht mehr gibt.
-rm -rf "$BASE/data/plugins/$PFOLDER" 2>/dev/null
+# Zustand, Tagesbilanz, Sperrdatei und der Bestand eines Updates - samt
+# einem beiseitegelegten (.alt). Sie tragen kein Geheimnis, aber sie gehoeren
+# zu einem Plugin, das es nicht mehr gibt.
+rm -rf "${PDATA:?}" 2>/dev/null
+for R in "$PDATA.bestand" "$PDATA.bestand.alt" "$PDATA.bestand.neu"; do
+    if [ -e "$R" ]; then
+        rm -rf "${R:?}" 2>/dev/null && echo "<OK> Entfernt: $R"
+    fi
+done
 
 # Die Marke "Aktualisierung laeuft" liegt NEBEN dem Datenordner - das rm -rf
-# darueber trifft den Nachbarn mit dem Punkt nicht. Bliebe sie liegen, wuerde
-# der Minutentakt einer spaeteren Neuinstallation bis zu einer Stunde lang
-# nichts tun, und niemand faende den Grund.
-MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
-if [ -f "$MARKE" ]; then
-    rm -f "$MARKE" && echo "<OK> Marke einer abgebrochenen Aktualisierung entfernt ($MARKE)."
-    [ -e "$MARKE" ] && echo "<FAIL> Die Marke liess sich nicht entfernen: $MARKE"
-fi
+# darueber trifft den Nachbarn mit dem Punkt nicht. Bliebe sie liegen, hielte
+# eine spaetere Neuinstallation sich fuer ein Update.
+rm -f "$MARKE" 2>/dev/null
+[ -e "$MARKE" ] && echo "<FAIL> Die Marke liess sich nicht entfernen: $MARKE"
 
 echo "<INFO> Das Protokoll bleibt stehen: $BASE/log/plugins/$PFOLDER"
 echo "<INFO> In Loxone bleiben die virtuellen Ein- und Ausgaenge stehen -"

@@ -406,59 +406,65 @@ function pw_selbsttest_dienst($cfg)
 /* ---------------- stop / status ---------------- */
 
 if ($pw_hat('stop')) {
-    /* ALLE eigenen Zuhoerer, nicht einer.
+    /* ALLE eigenen Zuhoerer, nicht einer - und seit 1.0.4 auch ihre Waisen.
      *
-     * Bis 1.0.2 wurde genau die eine Nummer aus der PID-Datei beendet. Das
-     * war in zwei Richtungen falsch: die Nummer konnte einem FREMDEN Vorgang
-     * gehoeren (gemessen 18.09.2026, Fall fremd_preupgrade - ein Koeder
-     * "sleep 600" war nach preupgrade.sh tot), und ein zweiter eigener
-     * Zuhoerer ohne Eintrag in der Datei blieb stehen (Fall zwei).
-     * pw_dienst_pids() findet beide Lagen argumentweise.
+     * Bis 1.0.2 wurde genau die eine Nummer aus der PID-Datei beendet (Faelle
+     * fremd_preupgrade und zwei, 18.09.2026). pw_dienst_pids() findet beide
+     * Lagen argumentweise, pw_signal() prueft vor JEDEM Signal selbst.
      *
-     * Die WIRKUNG wird gemessen, nicht der Rueckgabewert des Signals; und
-     * pw_signal() prueft vor JEDEM Signal noch einmal selbst, auch vor dem
-     * harten - zwischen der Suche und dem Signal koennte ein Prozess
-     * verschwinden und seine Nummer neu vergeben werden. */
+     * C4 (1.0.4): bis 1.0.3 lebte mosquitto_sub nach "Der Zuhoerer wurde
+     * beendet" weiter, hielt die Dateisperre, und kein Neustart kam mehr
+     * durch (Pruefbericht code C4). Das Kind ist seither mosquitto_sub
+     * selbst (keine Schale dazwischen), proc_terminate() trifft es, und was
+     * danach noch mit der Marke des Zuhoerers dasteht, beendet
+     * pw_waisen_beenden() - an Marke und Besitzer erkannt, nie am Namen. */
     $pids = pw_dienst_pids();
     if (!$pids) {
-        echo "Der Zuhoerer laeuft nicht.\n";
-        /* Eine PID-Datei, die auf nichts Eigenes zeigt, ist ein Rest aus
-         * einem Absturz und wird abgeraeumt - sonst zeigt die Oberflaeche
-         * beim naechsten Mal wieder auf sie. */
         @unlink($pw_pidfile);
+        list($pw_w_weg, $pw_w_rest) = pw_waisen_beenden();
+        if ($pw_w_rest) {
+            fwrite(STDERR, "Der Zuhoerer laeuft nicht, aber seine Waise liess sich nicht beenden (PID "
+                   . implode(', ', $pw_w_rest) . ").\n");
+            exit(1);
+        }
+        echo $pw_w_weg
+            ? "Der Zuhoerer lief nicht; seine Waise wurde beendet (PID " . implode(', ', $pw_w_weg) . ").\n"
+            : "Der Zuhoerer laeuft nicht.\n";
         exit(0);
     }
     foreach ($pids as $pw_z) { pw_signal($pw_z, 15); }
     for ($i = 0; $i < 50; $i++) {
         usleep(100000);
-        if (!pw_dienst_pids()) {
-            echo "Der Zuhoerer wurde beendet (PID " . implode(', ', $pids) . ").\n";
-            @unlink($pw_pidfile);
-            exit(0);
-        }
+        if (!pw_dienst_pids()) { break; }
     }
     /* Hart beendet wird NUR, was jetzt noch als eigener Zuhoerer dasteht -
      * neu gesucht, nicht angenommen. */
+    $pw_hart = false;
     $rest = pw_dienst_pids();
-    foreach ($rest as $pw_z) { pw_signal($pw_z, 9); }
-    usleep(300000);
+    if ($rest) {
+        foreach ($rest as $pw_z) { pw_signal($pw_z, 9); }
+        usleep(300000);
+        $pw_hart = true;
+    }
     $noch = pw_dienst_pids();
     @unlink($pw_pidfile);
-    if ($noch) {
+    list($pw_w_weg, $pw_w_rest) = pw_waisen_beenden();
+    if ($noch || $pw_w_rest) {
         fwrite(STDERR, "Der Zuhoerer liess sich nicht beenden (PID "
-               . implode(', ', $noch) . ").\n");
+               . implode(', ', array_merge($noch, $pw_w_rest)) . ").\n");
         exit(1);
     }
-    echo "Der Zuhoerer wurde hart beendet (PID " . implode(', ', $pids) . ").\n";
+    echo "Der Zuhoerer wurde " . ($pw_hart ? 'hart ' : '') . "beendet (PID " . implode(', ', $pids) . ")"
+       . ($pw_w_weg ? ", dazu seine Waise (PID " . implode(', ', $pw_w_weg) . ")" : '') . ".\n";
     exit(0);
 }
 
 if ($pw_hat('status')) {
     /* Diese Zeile ist der Waechter im Minutentakt: gibt sie 0 zurueck,
-     * startet cron.01min keinen neuen Zuhoerer. Beide Richtungen zaehlen -
-     * eine fremde Nummer in der PID-Datei darf nicht als laufender Dienst
-     * gelten, und ein laufender Dienst OHNE PID-Datei muss gefunden werden,
-     * sonst laufen hinterher zwei. Beides gemessen 18.09.2026, Fall status. */
+     * startet cron.01min keinen neuen Zuhoerer. Beide Richtungen zaehlen
+     * (18.09.2026, Fall status). Seit 1.0.4 (C4) nennt sie auch eine Waise -
+     * ein mosquitto_sub ohne Zuhoerer ist KEIN laufender Zuhoerer: rc 1, der
+     * Minutentakt startet neu, und der neue Zuhoerer beendet die Waise. */
     $pids = pw_dienst_pids();
     $pid = pw_dienst_pid();
     $alter = pw_dienst_alter();
@@ -468,6 +474,12 @@ if ($pw_hat('status')) {
                count($pids) > 1 ? ' (und ' . (count($pids) - 1) . ' weitere)' : '',
                $alter >= 0 ? $alter . ' s' : 'unbekannt');
         exit(0);
+    }
+    $pw_w = pw_zuhoerer_waisen();
+    if ($pw_w) {
+        echo "laeuft nicht - es steht noch eine Waise (mosquitto_sub ohne Zuhoerer, PID "
+           . implode(', ', $pw_w) . "); der naechste Start beendet sie\n";
+        exit(1);
     }
     echo "laeuft nicht\n";
     exit(1);
@@ -533,14 +545,34 @@ if (!pw_hat_mosquitto()) {
  * stirbt er, gibt das Betriebssystem sie frei, und der Waechter darf sofort
  * neu starten. Eine PID-Datei allein waere eine Behauptung. */
 @mkdir($pw_p['datadir'], 0775, true);
-$pw_lock = @fopen($pw_lockfile, 'c');
+/* C4 (1.0.4): die Sperre wird mit close-on-exec geoeffnet ('e'). Bis
+ * 1.0.3 erbten die Kinder (die Schale und mosquitto_sub) den Deskriptor;
+ * starb der Zuhoerer, hielt die Waise die Sperre, und jeder Neustart
+ * endete mit "Es laeuft bereits ein Zuhoerer." und rc 0 (Pruefbericht
+ * code C4, Regeln/03 "Sperre vererbt sich an Kinder"). Wo 'e' nicht
+ * geht, bleibt es beim alten Oeffnen; das Kind ist dann trotzdem
+ * mosquitto_sub selbst und endet mit dem Zuhoerer. */
+$pw_lock = @fopen($pw_lockfile, 'ce');
+if (!$pw_lock) { $pw_lock = @fopen($pw_lockfile, 'c'); }
 if (!$pw_lock) {
     fwrite(STDERR, "Sperrdatei nicht anlegbar: " . $pw_lockfile . "\n");
     exit(1);
 }
 if (!$pw_probe && !@flock($pw_lock, LOCK_EX | LOCK_NB)) {
-    echo "Es laeuft bereits ein Zuhoerer.\n";
-    exit(0);
+    /* Auf die FEHLERAUSGABE und mit rc 1: der Minutentakt schreibt einen
+     * gescheiterten Start nach cron.err (C4). */
+    fwrite(STDERR, "Es laeuft bereits ein Zuhoerer (die Sperre " . $pw_lockfile . " ist belegt).\n");
+    exit(1);
+}
+if (!$pw_probe) {
+    /* Eine Waise eines frueheren Zuhoerers beenden, bevor ein neuer
+     * mosquitto_sub angemeldet wird - sonst stuenden zwei Clients am
+     * Broker (C4). */
+    list($pw_w_weg, $pw_w_rest) = pw_waisen_beenden();
+    if ($pw_w_weg) {
+        pw_log('Zuhoerer: Waise eines frueheren Zuhoerers beendet (PID ' . implode(', ', $pw_w_weg)
+               . ($pw_w_rest ? '; nicht zu beenden: ' . implode(', ', $pw_w_rest) : '') . ').');
+    }
 }
 
 /* ---------------- den Zuhoerer starten ---------------- */
@@ -561,11 +593,28 @@ $pw_argv = array('mosquitto_sub',
                  '-p', (string) $pw_b['port'],
                  '-v', '-q', '1');
 foreach ($pw_themen as $pw_th) { $pw_argv[] = '-t'; $pw_argv[] = $pw_th; }
-$pw_befehl = ($pw_ordner !== '' ? 'XDG_CONFIG_HOME=' . escapeshellarg($pw_ordner) . ' ' : '')
-           . implode(' ', array_map('escapeshellarg', $pw_argv));
+/* C4 (1.0.4): OHNE Schale - die Befehlsliste geht unmittelbar an exec
+ * (PHP ab 7.4), die Zugangsdaten-Umgebung ueber den env-Parameter. Bis
+ * 1.0.3 lief "sh -c 'XDG_CONFIG_HOME=... mosquitto_sub ...'"; dash
+ * ersetzt sich dabei nicht durch mosquitto_sub, und proc_terminate()
+ * traf die Schale, nicht den Zuhoerer (gemessen, Pruefbericht code C4).
+ * Die Marke PW_ZUHOERER erkennt das Kind spaeter als Waise wieder.
+ *
+ * SIGPIPE: PHP-CLI ignoriert es, und ein ignoriertes Signal erbt jedes
+ * Kind ueber exec hinweg (gemessen SigIgn ...1000). Stirbt der Zuhoerer,
+ * endet mosquitto_sub dann nicht beim naechsten Schreiben. Fuer den Start
+ * des Kindes wird es deshalb auf die Vorgabe gestellt und danach wieder
+ * ignoriert (nur mit pcntl; ohne bleibt es wie bisher). */
+$pw_umgebung = getenv();
+if (!is_array($pw_umgebung)) { $pw_umgebung = array(); }
+if ($pw_ordner !== '') { $pw_umgebung['XDG_CONFIG_HOME'] = $pw_ordner; }
+$pw_umgebung['PW_ZUHOERER'] = $pw_p['datadir'];
 
 $pw_rohre = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
-$pw_ph = @proc_open($pw_befehl, $pw_rohre, $pw_pipes);
+$pw_sigpipe = function_exists('pcntl_signal') && defined('SIGPIPE');
+if ($pw_sigpipe) { @pcntl_signal(SIGPIPE, SIG_DFL); }
+$pw_ph = @proc_open($pw_argv, $pw_rohre, $pw_pipes, null, $pw_umgebung);
+if ($pw_sigpipe) { @pcntl_signal(SIGPIPE, SIG_IGN); }
 if (!is_resource($pw_ph)) {
     fwrite(STDERR, "mosquitto_sub liess sich nicht starten.\n");
     pw_log('Zuhoerer: mosquitto_sub liess sich nicht starten.');
@@ -641,6 +690,10 @@ $pw_start = time();
 $pw_gesehen = 0;      // Nachrichten mit Messwert
 $pw_uebergangen = 0;  // Nachrichten ohne Messwert (der Normalfall!)
 $pw_fremd = 0;        // Zeilen, die zu KEINER Pumpe gehoeren
+$pw_eigen = 0;        // Zeilen unter einem EIGENEN Praefix (B4, 1.0.4)
+$pw_unsinn = 0;       // Messwerte, die keine sein koennen (C7, 1.0.4)
+$pw_kind_ende = false;
+$pw_eigene = pw_eigene_praefixe($pw_voll);
 $pw_letzte_cfg = @filemtime($pw_p['config']);
 /* Nach einem Tag geordnet aufhoeren. Der Waechter startet sofort neu. Ein
  * Prozess, der wochenlang laeuft, sammelt Kleinigkeiten - und ein geplantes
@@ -687,6 +740,24 @@ while (!$pw_ende) {
             $pw_thema_z = '';
             $pw_sp = strpos((string) $z, ' ');
             if ($pw_sp !== false) { $pw_thema_z = substr((string) $z, 0, $pw_sp); }
+            /* B4 (1.0.4): eine Zeile unter einem EIGENEN Praefix ist das
+             * eigene Echo, nie ein Messwert. Bis 1.0.3 las der Zuhoerer mit
+             * quelle_topic 'pumpe/#' alle 25 eigenen Themen als Watt und
+             * schickte daraufhin 331 neue Datagramme (Pruefbericht mqtt B4).
+             * Verworfen, gezaehlt und einmal protokolliert. */
+            $pw_echo = false;
+            foreach ($pw_eigene as $pw_pr) {
+                if ($pw_thema_z !== '' && pw_thema_passt($pw_pr . '/+', $pw_thema_z)) { $pw_echo = true; break; }
+            }
+            if ($pw_echo) {
+                $pw_eigen++;
+                if ($pw_eigen === 1) {
+                    pw_log('Zuhoerer: Zeilen unter einem eigenen Praefix verworfen (' . $pw_thema_z
+                           . ') - das Quell-Thema trifft die eigenen Veroeffentlichungen.');
+                }
+                if ($pw_probe) { echo "  EIGENES ECHO : " . $pw_thema_z . "\n"; }
+                continue;
+            }
             $pw_id = $pw_thema_z === ''
                    ? null : pw_pumpe_fuer_thema($pw_voll, $pw_thema_z);
             if ($pw_id === null) {
@@ -698,6 +769,16 @@ while (!$pw_ende) {
             }
             $e = pw_zeile_verarbeiten($z, pw_pumpe($pw_voll, $pw_id),
                                       time(), !$pw_probe);
+            if ($e['art'] === 'unsinn') {
+                /* C7 (1.0.4): unter -5 W, NaN, unendlich - keine Messung. */
+                $pw_unsinn++;
+                if ($pw_unsinn === 1) {
+                    pw_log('Zuhoerer: unmoeglicher Messwert verworfen (' . var_export($e['watt'], true)
+                           . ' W, ' . $pw_thema_z . ') - er zaehlt nicht als Messung.');
+                }
+                if ($pw_probe) { echo "  UNSINN       : " . var_export($e['watt'], true) . " W\n"; }
+                continue;
+            }
             if ($e['art'] === 'messwert') {
                 $pw_gesehen++;
                 if ($pw_probe) {
@@ -730,7 +811,8 @@ while (!$pw_ende) {
          * sind genau die, die niemand vermisst. */
         pw_json_schreiben($pw_p['datadir'] . '/dienst.json', array(
             'ts' => time(), 'gesehen' => $pw_gesehen,
-            'uebergangen' => $pw_uebergangen, 'fremd' => $pw_fremd));
+            'uebergangen' => $pw_uebergangen, 'fremd' => $pw_fremd,
+            'eigen' => $pw_eigen, 'unsinn' => $pw_unsinn));
     }
 
     /* Ist mosquitto_sub gestorben? Dann endet auch dieser Lauf - der
@@ -740,6 +822,11 @@ while (!$pw_ende) {
     if (is_array($st) && empty($st['running'])) {
         pw_log('Zuhoerer: mosquitto_sub hat sich beendet (Rueckgabewert '
                . (isset($st['exitcode']) ? $st['exitcode'] : '?') . ').');
+        /* C4 (1.0.4): mit rc 3 enden, damit der Minutentakt es nach
+         * cron.err schreibt - bis 1.0.3 endete dieser Weg mit rc 0. */
+        fwrite(STDERR, 'mosquitto_sub hat sich beendet (Rueckgabewert '
+               . (isset($st['exitcode']) ? $st['exitcode'] : '?') . ").\n");
+        $pw_kind_ende = true;
         break;
     }
 
@@ -790,4 +877,4 @@ if ($pw_probe) {
         exit(1);
     }
 }
-exit(0);
+exit($pw_kind_ende && !$pw_probe ? 3 : 0);

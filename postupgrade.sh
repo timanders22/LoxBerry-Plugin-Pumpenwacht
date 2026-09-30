@@ -3,31 +3,36 @@
 # command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
 #
 # postinstall.sh laeuft beim Upgrade ohnehin - der Installer ruft es immer
-# auf. Was hier bleibt, ist das eine, was postinstall NICHT tun darf: den
-# zwischengespeicherten Zustand aufraeumen.
+# auf. Was hier bleibt: den Bestand aus preupgrade.sh zurueckspielen, die
+# Zwischenspeicher aufraeumen, den Zuhoerer neu starten und die Marke
+# entfernen.
 #
 # Bis 0.9.7 stand hier der Kommentar der Einspeisebremse - ueber gestellte
 # Grenzen und Wechselrichter, die ihren Wert behalten. Nichts davon gibt es
 # in diesem Plugin.
 #
-# WAS GELOESCHT WIRD UND WAS NICHT:
-#   stand.json          weg. Er traegt Laufzeiten, Startlisten und die
-#                       MQTT-Signatur. Aendert sich sein Aufbau zwischen zwei
-#                       Fassungen, rechnete der erste Durchlauf sonst mit
-#                       Feldern, die anders gemeint sind.
-#   endpunkt.json       weg. Das ist nur der Zwischenspeicher der
+# WAS NACH EINEM UPDATE BLEIBT (C1/C2/I1, 1.0.4):
+#   stand.json          KOMMT ZURUECK - aus dem Bestand, den preupgrade.sh
+#                       neben den Datenordner gelegt hat. Er traegt
+#                       Betriebsstunden, Starts gesamt, Wartungsmarken, den
+#                       Zeitpunkt des letzten Laufs (Ruhe-Ueberwachung) und
+#                       eine anliegende Sperre. Bis 1.0.3 wurde er hier
+#                       geloescht: danach war die Ruhe-Ueberwachung der
+#                       Sumpfpumpe abgeschaltet, bis sie wieder einmal lief
+#                       (je_gelaufen haengt an starts_gesamt), und die Zaehler
+#                       standen in Loxone auf 0 (Pruefbericht code C1).
+#   tage.json           KOMMT ZURUECK. Bis 1.0.3 stand hier "BLEIBT" - das
+#                       war falsch: purge_installation loescht den Datenordner
+#                       bei jedem Update, und die Tagesbilanz ging verloren
+#                       (Pruefbericht code C2, installer 1).
+#   mqtt_praefixe.json  KOMMT ZURUECK - die Deinstallation raeumt unter jedem
+#                       je benutzten Praefix ab (B9).
+#   endpunkt*.json      weg. Das ist nur der Zwischenspeicher der
 #                       Selbstpruefung; nach einem Update soll sie neu messen.
-#   tage.json           BLEIBT. Die Tagesbilanz ist die einzige Zahl, die
-#                       dieses Plugin ueber Wochen sammelt - sie ist der
-#                       eigentliche Wert, und sie neu aufzubauen dauerte
-#                       sechzig Tage.
-#   stand.lock          BLEIBT (leere Datei, traegt nur die Dateisperre).
-#
-# Die Sperre in Loxone geht dabei NICHT verloren: sie steht in stand.json und
-# faellt damit weg - aber der Waechter schaltet ohnehin nichts selbst, und der
-# erste Durchlauf nach dem Update stellt den Befund neu. Ein Trockenlauf, der
-# noch anliegt, wird sofort wieder erkannt; einer, der vorbei ist, gilt als
-# vorbei. Das ist die Seite, auf der man in dieser Luecke irren will.
+#   dienst.json         weg - ein Bericht ueber einen Prozess, den es nicht
+#                       mehr gibt.
+# Zurueckgespielt wird NUR bei vorhandener Marke (Entscheidung 1); ohne Marke
+# geht der Bestand nach .alt.
 ARGV2=$2
 ARGV3=$3
 ARGV5=$5
@@ -43,14 +48,64 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
 fi
 
 PDATA="$BASE/data/plugins/$PFOLDER"
+BESTAND="$BASE/data/plugins/$PFOLDER.bestand"
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+TAKT="$BASE/bin/plugins/$PFOLDER/pw_takt.php"
 # Die Endpunktprobe liegt seit 1.0.0 JE PUMPE (endpunkt_<kennung>.json);
-# die endungslose Datei kommt noch aus 0.9.14. Und dienst.json ist der
-# Bericht des ALTEN Zuhoerers - nach einem Update ist er eine Auskunft
-# ueber einen Prozess, den es nicht mehr gibt.
-rm -f "$PDATA/stand.json" "$PDATA/endpunkt.json" \
-      "$PDATA"/endpunkt_*.json "$PDATA/dienst.json"
+# die endungslose Datei kommt noch aus 0.9.14.
+rm -f "$PDATA/endpunkt.json" "$PDATA"/endpunkt_*.json "$PDATA/dienst.json"
+
+ZURUECK=0
+if [ -d "$BESTAND" ]; then
+    if [ -f "$MARKE" ]; then
+        mkdir -p "$PDATA"
+        FEHL=""
+        for f in stand.json tage.json mqtt_praefixe.json; do
+            [ -f "$BESTAND/$f" ] || continue
+            # Unter einem eigenen Namen kopieren und dann umbenennen. Liegt
+            # schon eine Sperrdatei (eine Anlieferung aus Loxone hat in der
+            # Zwischenzeit geschrieben), wird unter ihr umbenannt - sonst
+            # koennte die Anlieferung den zurueckgespielten Stand gleich
+            # wieder ueberschreiben. Angelegt wird sie hier nicht: sie gehoert
+            # dem Plugin.
+            if cp "$BESTAND/$f" "$PDATA/$f.bestand.neu" 2>/dev/null; then
+                if [ -f "$PDATA/stand.lock" ] && command -v flock >/dev/null 2>&1; then
+                    flock -w 10 "$PDATA/stand.lock" mv -f "$PDATA/$f.bestand.neu" "$PDATA/$f"
+                else
+                    mv -f "$PDATA/$f.bestand.neu" "$PDATA/$f"
+                fi
+                if cmp -s "$BESTAND/$f" "$PDATA/$f"; then
+                    ZURUECK=$((ZURUECK + 1))
+                else
+                    FEHL="$FEHL $f"
+                fi
+            else
+                FEHL="$FEHL $f"
+            fi
+            rm -f "$PDATA/$f.bestand.neu" 2>/dev/null
+        done
+        if [ -z "$FEHL" ]; then
+            rm -rf "${BESTAND:?}"
+            echo "<OK> Zustand zurueckgespielt: Zaehler, Wartungsmarken und die Ruhe-Ueberwachung laufen weiter."
+        else
+            echo "<FAIL> Nicht zurueckgespielt:$FEHL - der Bestand bleibt liegen: $BESTAND"
+        fi
+    else
+        rm -rf "${BESTAND:?}.alt" 2>/dev/null
+        mv -f "$BESTAND" "$BESTAND.alt" 2>/dev/null
+        echo "<WARNING> Ohne die Marke aus preupgrade.sh wird der Bestand nicht eingespielt - beiseitegelegt: $BESTAND.alt"
+    fi
+fi
 if [ -f "$PDATA/tage.json" ]; then
     echo "<OK> Tagesbilanz behalten ($(grep -o '"tag"' "$PDATA/tage.json" 2>/dev/null | wc -l) Tage)."
+fi
+# Der erste Takt nach dem Update schickt den VOLLEN Satz (B2): sonst stuenden
+# die retained Zustaende, die sich seit dem Update nicht geaendert haben,
+# nicht im Broker (Regeln/07, ACTiKamera 1.9.19). Derselbe Aufruf setzt ein
+# aus 1.0.3 uebernommenes stale_s=300 auf 180 (Entscheidung 13).
+if [ -f "$TAKT" ] && command -v php >/dev/null 2>&1; then
+    NU=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" php "$TAKT" --nach-update 2>&1 </dev/null)
+    [ -n "$NU" ] && echo "$NU" | sed 's/^/<INFO> /'
 fi
 
 # ---------- Ende der Installation: Waisen, Start, Marke ----------
@@ -141,5 +196,5 @@ if [ -f "$DIENST" ]; then
     fi
 fi
 
-echo "<OK> postupgrade abgeschlossen - beim naechsten Durchlauf wird frisch gemessen."
+echo "<OK> postupgrade abgeschlossen."
 exit 0

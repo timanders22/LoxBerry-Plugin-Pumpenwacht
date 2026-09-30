@@ -124,10 +124,14 @@ if ($pw_aktion === 'wert') {
     /* Abweisen statt zurechtbiegen: eine leere oder unlesbare Zahl darf
      * nicht als 0 W gelten - 0 W hiesse "Pumpe steht", und genau diese
      * Falschaussage verhindert der Kern mit seinem -1 (siehe pw_laeuft). */
-    if ($roh === '' || !is_numeric(str_replace(',', '.', $roh))) {
+    /* C7 (1.0.4): auch Werte unter -5 W, NaN und unendliche werden
+     * abgewiesen. Bis 1.0.3 galt watt=-50 als "Pumpe steht" mit
+     * status_ok=1, und watt=1e999 ging als "watt INF" nach Loxone, danach
+     * HTTP 500 beim Speichern (Pruefbericht code C7). */
+    if ($roh === '' || !is_numeric(str_replace(',', '.', $roh)) || !pw_watt_gueltig($roh)) {
         http_response_code(400);
         echo "FEHLER;OK=0;GRUND=WATT\n";
-        echo "watt muss eine Zahl sein, empfangen wurde: "
+        echo "watt muss eine endliche Zahl ab -5 sein, empfangen wurde: "
              . htmlspecialchars(substr($roh, 0, 40), ENT_QUOTES, 'UTF-8') . "\n";
         exit;
     }
@@ -150,6 +154,12 @@ if ($pw_aktion === 'wert') {
     echo "OK=" . ($fehl === 0 ? 1 : 0) . ";BEFUND=" . $felder['befund']
          . ";SPERRE=" . $felder['sperre'] . ";GESENDET=" . $versucht
          . ";FEHL=" . $fehl . "\n";
+    /* B7 (1.0.4): GESENDET zaehlt, was an den UDP-Eingang des Gateways
+     * ABGESCHICKT wurde, FEHL die gescheiterten Sendeversuche. Ob es
+     * ankam, bestaetigt der Eingang nicht (Regeln/07) - bei 100 % Verlust
+     * stand hier bis 1.0.3 dieselbe Zeile ohne diesen Satz. */
+    echo $versucht . " Nachrichten an den UDP-Eingang des MQTT-Gateways abgeschickt, "
+         . $fehl . " gescheitert - ob sie ankamen, bestaetigt der Eingang nicht.\n";
     exit;
 }
 
@@ -213,7 +223,10 @@ if ($pw_aktion === 'zeile') {
      * Loxone auf diesem Weg keinen Ausfall erkennen. */
     $st = pw_stand($pw_cfg['id']);
     $pw_felder['status_ok'] = ($pw_felder['laeuft'] === -1) ? 0 : 1;
-    $pw_felder['status_ts'] = time();
+    /* B8 (1.0.4): der Zeitpunkt des letzten MINUTENTAKTS, nicht die
+     * Abrufzeit - sonst zeigt eine Alterung in Loxone immer 0 s, und ein
+     * stehender Takt faellt nicht auf. 0 = es lief noch keiner. */
+    $pw_felder['status_ts'] = (int) pw_zahl(isset($st['takt_ts']) ? $st['takt_ts'] : 0, 0.0);
     $pw_felder['status_zaehler'] = (int) pw_zahl(isset($st['status_zaehler']) ? $st['status_zaehler'] : 0, 0.0);
     $pw_felder['status_quelle_ts'] = (int) pw_zahl(isset($st['quelle_ts']) ? $st['quelle_ts'] : 0, 0.0);
     echo pw_eine_zeile($pw_felder) . "\n";
