@@ -52,7 +52,12 @@ header('X-Content-Type-Options: nosniff');
  *   falsches                HTTP 403  SELFTEST;OK=0;ERR=TOKEN
  *   keines eingerichtet     HTTP 403  SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET */
 $pw_erlaubt = array('wert', 'stand', 'zeile', 'json', 'quittieren', 'anforderung', 'selftest');
-$pw_aktion = isset($_GET['aktion']) ? strtolower((string) $_GET['aktion']) : 'stand';
+/* Nachtrag vb_pw2 (30.09.2026): jeder Parameter nur als Zeichenkette. Eine
+ * Liste (aktion[]=) machte (string) zu "Array" samt PHP-Warnung - VOR der
+ * Tokenpruefung und mit display_errors mitten in der Antwort. Eine Liste ist
+ * jetzt eine unbekannte Aktion (400 nach der Tokenpruefung). */
+$pw_aktion = !isset($_GET['aktion']) ? 'stand'
+           : (is_string($_GET['aktion']) ? strtolower($_GET['aktion']) : '[liste]');
 $pw_selbst = ($pw_aktion === 'selftest');
 
 /* Die Konfiguration OHNE Selbstheilung lesen.
@@ -87,7 +92,8 @@ if (!pw_token_ok($pw_cfg)) {
  * Adresse kennt.
  *
  * Ohne Angabe die erste Pumpe. Mit unbekannter Angabe: abgewiesen. */
-$pw_pid = isset($_GET['pumpe']) ? trim((string) $_GET['pumpe']) : '';
+$pw_pid = !isset($_GET['pumpe']) ? ''
+        : (is_string($_GET['pumpe']) ? trim($_GET['pumpe']) : '[liste]');     // Liste = unbekannte Pumpe
 if ($pw_pid !== '') {
     $pw_voll = pw_config(false);
     if (!in_array($pw_pid, pw_pumpe_ids($pw_voll), true)) {
@@ -120,7 +126,7 @@ if ($pw_selbst) {
 }
 
 if ($pw_aktion === 'wert') {
-    $roh = isset($_GET['watt']) ? trim((string) $_GET['watt']) : '';
+    $roh = (isset($_GET['watt']) && is_string($_GET['watt'])) ? trim($_GET['watt']) : '';     // Liste = keine Zahl
     /* Abweisen statt zurechtbiegen: eine leere oder unlesbare Zahl darf
      * nicht als 0 W gelten - 0 W hiesse "Pumpe steht", und genau diese
      * Falschaussage verhindert der Kern mit seinem -1 (siehe pw_laeuft). */
@@ -182,7 +188,7 @@ if ($pw_aktion === 'quittieren') {
 }
 
 if ($pw_aktion === 'anforderung') {
-    $an = isset($_GET['an']) ? trim((string) $_GET['an']) : '';
+    $an = (isset($_GET['an']) && is_string($_GET['an'])) ? trim($_GET['an']) : '';     // Liste = weder 0 noch 1
     if (!in_array($an, array('0', '1'), true)) {
         http_response_code(400);
         echo "FEHLER;OK=0;GRUND=AN\n";

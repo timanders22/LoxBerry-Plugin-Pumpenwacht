@@ -27,6 +27,11 @@
 #                       (Pruefbericht code C2, installer 1).
 #   mqtt_praefixe.json  KOMMT ZURUECK - die Deinstallation raeumt unter jedem
 #                       je benutzten Praefix ab (B9).
+#   alarm.json          KOMMT ZURUECK - der letzte Alarm je Pumpe (Reiter Test,
+#                       Verbesserungsbau 30.09.2026).
+#   signal.json         KOMMT ZURUECK - welcher Alarm schon ueber SignalBot
+#                       gemeldet ist; sonst bekaeme ein gemeldeter Alarm nach
+#                       dem Update kein Ende gemeldet.
 #   endpunkt*.json      weg. Das ist nur der Zwischenspeicher der
 #                       Selbstpruefung; nach einem Update soll sie neu messen.
 #   dienst.json         weg - ein Bericht ueber einen Prozess, den es nicht
@@ -60,7 +65,7 @@ if [ -d "$BESTAND" ]; then
     if [ -f "$MARKE" ]; then
         mkdir -p "$PDATA"
         FEHL=""
-        for f in stand.json tage.json mqtt_praefixe.json; do
+        for f in stand.json tage.json mqtt_praefixe.json alarm.json signal.json; do
             [ -f "$BESTAND/$f" ] || continue
             # Unter einem eigenen Namen kopieren und dann umbenennen. Liegt
             # schon eine Sperrdatei (eine Anlieferung aus Loxone hat in der

@@ -83,6 +83,70 @@ require_once $pw_lib;
 
 $pw_meldungen = array();
 $pw_fehler = array();
+/* X-2 (Regeln/04, Verbesserungsbau 30.09.2026): die eingetippten Werte EINES
+ * beanstandeten Formulars. Sie reisen mit der Einmalmeldung und fuellen beim
+ * GET das Formular. Nie Geheimnisse: das SignalBot-Token wird gar nicht
+ * gesammelt, sein Feld bleibt leer. */
+$pw_eingaben = null;
+$pw_falsch = array();
+function pw_eingaben_sammeln($form, array $falsch, $pid)
+{
+    $str = function ($v) {
+        return is_string($v) ? substr(preg_replace('/[\x00-\x1F\x7F]/', '', $v), 0, 4096) : '';
+    };
+    $felder = array(
+        'settings' => array('name', 'art', 'ruht_s', 'modell', 'quelle', 'quelle_topic', 'an_w',
+                            'trocken_w', 'trocken_s', 'ueberlast_w', 'dauerlauf_s', 'starts_h',
+                            'anlauf_s', 'stale_s', 'signal_ordner', 'signal_an'),
+        'mqtt'     => array('mqtt_topic'),
+        'test'     => array('watt'));
+    $haken = array(
+        'settings' => array('sperren_ein', 'sperre_trockenlauf', 'sperre_dauerlauf', 'sperre_schaltspiel',
+                            'sperre_ueberlast', 'sperre_kein_anlauf', 'sperre_ruht', 'quittung_noetig',
+                            'signal_ein', 'signal_dringend'),
+        'mqtt'     => array('mqtt_ein'),
+        'test'     => array());
+    $e = array('form' => $form, 'pumpe' => (string) $pid, 'falsch' => array_values(array_unique($falsch)),
+               'werte' => array(), 'haken' => array());
+    foreach (isset($felder[$form]) ? $felder[$form] : array() as $k) {
+        if (isset($_POST[$k])) { $e['werte'][$k] = $str($_POST[$k]); }
+    }
+    foreach (isset($haken[$form]) ? $haken[$form] : array() as $k) {
+        $e['haken'][$k] = isset($_POST[$k]);
+    }
+    return $e;
+}
+/* Beim GET: Wert, Haken und Markierung - nach einer Beanstandung aus den
+ * eingetippten Werten, sonst aus der Konfiguration. Nur fuer das eine
+ * Formular und nur fuer die Pumpe, zu der es gehoerte. */
+function pw_eingabe($form)
+{
+    global $pw_eingaben, $pw_pid;
+    return (is_array($pw_eingaben) && isset($pw_eingaben['form'], $pw_eingaben['pumpe'])
+            && $pw_eingaben['form'] === $form && $pw_eingaben['pumpe'] === (string) $pw_pid)
+         ? $pw_eingaben : null;
+}
+function pw_fw($form, $k, $gespeichert)
+{
+    $e = pw_eingabe($form);
+    if ($e !== null && isset($e['werte'][$k]) && is_string($e['werte'][$k])) { return $e['werte'][$k]; }
+    return (string) $gespeichert;
+}
+function pw_fh($form, $k, $gespeichert)
+{
+    $e = pw_eingabe($form);
+    if ($e !== null && isset($e['haken']) && is_array($e['haken']) && array_key_exists($k, $e['haken'])) {
+        return !empty($e['haken'][$k]);
+    }
+    return (bool) $gespeichert;
+}
+function pw_fk($form, $k, $nur_klasse = false)
+{
+    $e = pw_eingabe($form);
+    $ja = ($e !== null && isset($e['falsch']) && is_array($e['falsch']) && in_array($k, $e['falsch'], true));
+    if ($nur_klasse) { return $ja ? ' sm-beanstandet' : ''; }
+    return $ja ? ' class="sm-beanstandet"' : '';
+}
 
 /* ---------------- Konfiguration ---------------- */
 /* Vervollstaendigen statt nur ergaenzen: array_merge beim Lesen macht
@@ -374,12 +438,14 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
         'trocken_w' => 'EINST.L_TROCKEN_W', 'trocken_s' => 'EINST.L_TROCKEN_S',
         'ueberlast_w' => 'EINST.L_UEBERLAST_W', 'dauerlauf_s' => 'EINST.L_DAUERLAUF_S',
         'starts_h' => 'EINST.L_STARTS_H', 'anlauf_s' => 'EINST.L_ANLAUF_S',
-        'stale_s' => 'EINST.L_STALE_S');
+        'stale_s' => 'EINST.L_STALE_S',
+        'signal_ordner' => 'EINST.L_SIGNAL_ORDNER', 'signal_an' => 'EINST.L_SIGNAL_AN');
     /* Dieselbe Positivliste wie die Sicherung - eine zweite Wahrheit ueber
      * zulaessige Werte gibt es nicht (pw_grenzen). */
     foreach (array('name', 'modell', 'art', 'ruht_s', 'quelle', 'quelle_topic',
                    'an_w', 'trocken_w', 'trocken_s', 'ueberlast_w',
-                   'dauerlauf_s', 'starts_h', 'anlauf_s', 'stale_s') as $pw_f) {
+                   'dauerlauf_s', 'starts_h', 'anlauf_s', 'stale_s',
+                   'signal_ordner', 'signal_an') as $pw_f) {
         /* Ein Feld, das das Formular GAR NICHT mitschickt, behaelt seinen
          * bisherigen Wert - es wird weder zurueckgesetzt noch beanstandet.
          * REGELN_2, 'Speichern-Handler: uebernehmen, was das Formular nicht
@@ -407,6 +473,7 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
          * Bis 1.0.3 wurde der Schluessel gerechnet, und fuer Name, Art und
          * Ruhefrist stand "EINST.L_NAME" roh in der Meldung - die
          * Schluessel stehen unter PUMPE.L_* (Pruefbericht oberflaeche O8). */
+        $pw_falsch[] = $pw_f;     // X-2
         $pw_bez = pw_t(isset($pw_beschriftung[$pw_f]) ? $pw_beschriftung[$pw_f] : 'EINST.L_MODELL');
         if (strncmp($pw_grund, 'bereich:', 8) === 0) {
             list(, $pw_min, $pw_max) = explode(':', $pw_grund, 3);
@@ -422,18 +489,38 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
     }
     foreach (array('sperren_ein', 'sperre_trockenlauf', 'sperre_dauerlauf',
                    'sperre_schaltspiel', 'sperre_ueberlast', 'sperre_kein_anlauf',
-                   'sperre_ruht', 'quittung_noetig') as $pw_h) {
+                   'sperre_ruht', 'quittung_noetig', 'signal_ein', 'signal_dringend') as $pw_h) {
         $pw_neu[$pw_h] = isset($_POST[$pw_h]) ? 1 : 0;
+    }
+    /* c1 (Verbesserungsbau 30.09.2026): das SignalBot-Token. Ein leeres Feld
+     * heisst "unveraendert" (wie ein Kennwortfeld); es geht nie in die Seite
+     * zurueck, auch nicht nach einer Beanstandung (X-2). Geprueft ueber
+     * DIESELBE Positivliste wie beim Zurueckspielen (pw_grenzen). */
+    if (isset($_POST['signal_token']) && (!is_string($_POST['signal_token']) || trim($_POST['signal_token']) !== '')) {
+        list($pw_wert, $pw_grund) = pw_wert_pruefen('signal_token', $_POST['signal_token']);
+        if ($pw_grund === '') {
+            $pw_neu['signal_token'] = $pw_wert;
+        } else {
+            $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_MUSTER'), pw_t('EINST.L_SIGNAL_TOKEN'));
+            $pw_falsch[] = 'signal_token';
+        }
+    }
+    if (!empty($pw_neu['signal_ein']) && !in_array('signal_token', $pw_falsch, true)
+        && trim((string) (isset($pw_neu['signal_token']) ? $pw_neu['signal_token'] : '')) === '') {
+        $pw_beanstandet[] = pw_t('EINST.FEHLER_SIGNAL_TOKEN');
+        $pw_falsch[] = 'signal_token';
     }
     /* B4 (1.0.4): ein Quell-Filter, der die eigenen Themen trifft ('#',
      * '+/+', '<praefix>/#'), liesse den Zuhoerer sich selbst abhoeren. */
     if (!$pw_beanstandet) {
         foreach (pw_quelle_kollisionen(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid)) as $pw_k) {
             $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_ECHO'), pw_e($pw_k));
+            $pw_falsch[] = 'quelle_topic';
         }
     }
     if ($pw_beanstandet) {
         $pw_fehler = array_merge($pw_fehler, $pw_beanstandet);
+        $pw_eingaben = pw_eingaben_sammeln('settings', $pw_falsch, $pw_pid);     // X-2
     } elseif (pw_config_speichern(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid))) {
         $pw_meldungen[] = pw_t('ALLG.GESPEICHERT');
     } else {
@@ -479,12 +566,14 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
          * Beanstandung, und mqtt_ein war umgestellt (Pruefbericht
          * oberflaeche O7; Regeln/05: speichern nur mit leerer Liste). */
         $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_MUSTER'), pw_t('MQTT.L_TOPIC'));
+        $pw_eingaben = pw_eingaben_sammeln('mqtt', array('mqtt_topic'), $pw_pid);     // X-2
     } else {
         $pw_neu['mqtt_topic'] = pw_mqtt_thema_saeubern($pw_thema_wert);
         $pw_neu_voll = pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid);
         $pw_kol = pw_quelle_kollisionen($pw_neu_voll);
         if ($pw_kol) {
             foreach ($pw_kol as $pw_k) { $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_ECHO'), pw_e($pw_k)); }
+            $pw_eingaben = pw_eingaben_sammeln('mqtt', array('mqtt_topic'), $pw_pid);     // X-2
         } elseif (pw_config_speichern($pw_neu_voll)) {
             $pw_meldungen[] = pw_t('ALLG.GESPEICHERT');
             $pw_neu_praefix = pw_mqtt_thema(pw_pumpe(pw_config(), $pw_pid));
@@ -555,6 +644,7 @@ if ($pw_ist_post && isset($_POST['testwert'])) {
     /* C7 (1.0.4): unter -5 W, NaN und unendlich ist keine Messung. */
     if ($pw_roh === '' || !is_numeric(str_replace(',', '.', $pw_roh)) || !pw_watt_gueltig($pw_roh)) {
         $pw_fehler[] = pw_t('TEST.FEHLER_WATT');
+        $pw_eingaben = pw_eingaben_sammeln('test', array('watt'), $pw_pid);     // X-2
     } else {
         $pw_wattwert = (float) str_replace(',', '.', $pw_roh);
         list($pw_ns, $pw_grund, $pw_v, $pw_fl) =
@@ -622,7 +712,8 @@ if ($pw_ist_post && isset($_POST['log_leeren'])) {
  * geht diesen Weg. */
 if ($pw_ist_post) {
     if (!pw_meldung_ablegen(array('meldungen' => $pw_meldungen, 'fehler' => $pw_fehler,
-                                  'testausgabe' => $pw_testausgabe))) {
+                                  'testausgabe' => $pw_testausgabe,
+                                  'eingaben' => $pw_eingaben))) {
         pw_log('Die Einmalmeldung liess sich nicht schreiben - das Ergebnis des letzten '
                . 'Knopfdrucks ist nach der Umleitung nicht zu sehen.');
     }
@@ -642,6 +733,13 @@ if ($pw_einmal !== null) {
     }
     if (isset($pw_einmal['testausgabe']) && is_string($pw_einmal['testausgabe'])) {
         $pw_testausgabe = $pw_einmal['testausgabe'];
+    }
+    /* X-2: nach einer Beanstandung fuellt DIESER GET das Formular aus den
+     * eingetippten Werten. Die Einmalmeldung ist schon geloescht - der
+     * naechste GET zeigt wieder die gespeicherten. */
+    if (isset($pw_einmal['eingaben']) && is_array($pw_einmal['eingaben'])
+        && isset($pw_einmal['eingaben']['form']) && is_string($pw_einmal['eingaben']['form'])) {
+        $pw_eingaben = $pw_einmal['eingaben'];
     }
 }
 
@@ -799,6 +897,9 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL') . ' ' . pw_fassung(), 'https
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
 .sm-strich { color: #777; font-weight: 700; }
+/* Ergaenzung (Verbesserungsbau 30.09.2026, nicht aus der Vorlage): X-2 markiert
+   ein beanstandetes Feld. */
+.sm-wrap input.sm-beanstandet, .sm-wrap select.sm-beanstandet { border: 2px solid #b00000 !important; background: #fff5f4 !important; }
 </style>
 <div class="sm-wrap">
 <h1 style="font-size:1.4em;margin:10px 0 0;"><?= pw_e(pw_t('ALLG.TITEL')) ?> <span style="font-size:0.62em;color:#777;font-weight:400;"><?= pw_e(pw_fassung()) ?></span></h1>
@@ -903,21 +1004,21 @@ if ($pw_felder['laeuft'] === -1) {
 <h2><?= pw_e(pw_t('PUMPE.H_PUMPE')) ?></h2>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('PUMPE.L_NAME')) ?></label>
-  <input data-role="none" type="text" name="name" value="<?= pw_e($pw_cfg['name']) ?>" placeholder="<?= pw_e($pw_cfg['id']) ?>">
+  <input data-role="none" type="text" name="name" value="<?= pw_e(pw_fw('settings', 'name', $pw_cfg['name'])) ?>"<?= pw_fk('settings', 'name') ?> placeholder="<?= pw_e($pw_cfg['id']) ?>">
   <div class="sm-hilfe"><?= pw_t('PUMPE.H_NAME') ?></div>
 </div>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('PUMPE.L_ART')) ?></label>
-  <select data-role="none" class="sm-auswahl" name="art">
+  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'art', true) ?>" name="art">
 <?php foreach (pw_arten() as $pw_ak => $pw_av): ?>
-    <option value="<?= pw_e($pw_ak) ?>"<?= pw_art($pw_cfg) === $pw_ak ? ' selected' : '' ?>><?= pw_e(pw_t($pw_av['name'])) ?></option>
+    <option value="<?= pw_e($pw_ak) ?>"<?= pw_fw('settings', 'art', pw_art($pw_cfg)) === $pw_ak ? ' selected' : '' ?>><?= pw_e(pw_t($pw_av['name'])) ?></option>
 <?php endforeach; ?>
   </select>
   <div class="sm-hilfe"><?= pw_t('PUMPE.H_ART') ?></div>
 </div>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('PUMPE.L_RUHT_S')) ?></label>
-  <input data-role="none" type="text" name="ruht_s" value="<?= pw_e($pw_cfg['ruht_s']) ?>">
+  <input data-role="none" type="text" name="ruht_s" value="<?= pw_e(pw_fw('settings', 'ruht_s', $pw_cfg['ruht_s'])) ?>"<?= pw_fk('settings', 'ruht_s') ?>>
   <div class="sm-hilfe"><?= pw_t('PUMPE.H_RUHT_S') ?></div>
 </div>
 <div class="sm-feld sm-mono sm-kennung"><?= pw_e(pw_t('PUMPE.L_ID')) ?>: <?= pw_e($pw_cfg['id']) ?></div>
@@ -925,9 +1026,9 @@ if ($pw_felder['laeuft'] === -1) {
 <h2><?= pw_e(pw_t('EINST.H_MODELL')) ?></h2>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('EINST.L_MODELL')) ?></label>
-  <select data-role="none" class="sm-auswahl" name="modell" id="pw_modell" onchange="pwModell()">
+  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'modell', true) ?>" name="modell" id="pw_modell" onchange="pwModell()">
 <?php foreach ($pw_modelle as $pw_mk => $pw_mv) { ?>
-    <option value="<?= pw_e($pw_mk) ?>" data-p1="<?= (int) $pw_mv['p1'] ?>" data-starts="<?= (int) $pw_mv['starts_h'] ?>"<?= $pw_cfg['modell'] === $pw_mk ? ' selected' : '' ?>><?= pw_e(pw_t($pw_mv['name'])) ?></option>
+    <option value="<?= pw_e($pw_mk) ?>" data-p1="<?= (int) $pw_mv['p1'] ?>" data-starts="<?= (int) $pw_mv['starts_h'] ?>"<?= pw_fw('settings', 'modell', $pw_cfg['modell']) === $pw_mk ? ' selected' : '' ?>><?= pw_e(pw_t($pw_mv['name'])) ?></option>
 <?php } ?>
   </select>
   <div class="sm-hilfe"><?= pw_t('EINST.H_MODELL_TEXT') ?></div>
@@ -937,15 +1038,15 @@ if ($pw_felder['laeuft'] === -1) {
 <div class="sm-hinweis"><?= pw_t('EINST.H_QUELLE_TEXT') ?></div>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('EINST.L_QUELLE')) ?></label>
-  <select data-role="none" class="sm-auswahl" name="quelle">
-    <option value="loxone"<?= $pw_cfg['quelle'] !== 'mqtt' ? ' selected' : '' ?>><?= pw_e(pw_t('EINST.Q_LOXONE')) ?></option>
-    <option value="mqtt"<?= $pw_cfg['quelle'] === 'mqtt' ? ' selected' : '' ?>><?= pw_e(pw_t('EINST.Q_MQTT')) ?></option>
+  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'quelle', true) ?>" name="quelle">
+    <option value="loxone"<?= pw_fw('settings', 'quelle', $pw_cfg['quelle']) !== 'mqtt' ? ' selected' : '' ?>><?= pw_e(pw_t('EINST.Q_LOXONE')) ?></option>
+    <option value="mqtt"<?= pw_fw('settings', 'quelle', $pw_cfg['quelle']) === 'mqtt' ? ' selected' : '' ?>><?= pw_e(pw_t('EINST.Q_MQTT')) ?></option>
   </select>
   <div class="sm-hilfe"><?= pw_t('EINST.H_QUELLE_WAHL') ?></div>
 </div>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('EINST.L_QUELLE_TOPIC')) ?></label>
-  <input data-role="none" type="text" name="quelle_topic" value="<?= pw_e($pw_cfg['quelle_topic']) ?>" placeholder="shelly1pmg4-Pumpensumpf/#">
+  <input data-role="none" type="text" name="quelle_topic" value="<?= pw_e(pw_fw('settings', 'quelle_topic', $pw_cfg['quelle_topic'])) ?>"<?= pw_fk('settings', 'quelle_topic') ?> placeholder="shelly1pmg4-Pumpensumpf/#">
   <div class="sm-hilfe"><?= pw_t('EINST.H_QUELLE_TOPIC') ?></div>
 </div>
 <?php if ($pw_cfg['quelle'] === 'mqtt' && !pw_hat_mosquitto()) { ?>
@@ -971,7 +1072,7 @@ $pw_zahlfelder = array(
 foreach ($pw_zahlfelder as $pw_zf): ?>
 <div class="sm-feld">
   <label><?= pw_e(pw_t($pw_zf[1])) ?></label>
-  <input data-role="none" type="text" name="<?= pw_e($pw_zf[0]) ?>" value="<?= pw_e($pw_cfg[$pw_zf[0]]) ?>">
+  <input data-role="none" type="text" name="<?= pw_e($pw_zf[0]) ?>" value="<?= pw_e(pw_fw('settings', $pw_zf[0], $pw_cfg[$pw_zf[0]])) ?>"<?= pw_fk('settings', $pw_zf[0]) ?>>
   <div class="sm-hilfe"><?= pw_t($pw_zf[2]) ?></div>
 </div>
 <?php endforeach; ?>
@@ -980,7 +1081,7 @@ foreach ($pw_zahlfelder as $pw_zf): ?>
 <div class="sm-warnung"><?= pw_t('EINST.SPERREN_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="sperren_ein" value="1" <?= !empty($pw_cfg['sperren_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="sperren_ein" value="1" <?= pw_fh('settings', 'sperren_ein', !empty($pw_cfg['sperren_ein'])) ? 'checked' : '' ?>>
     <?= pw_e(pw_t('EINST.L_SPERREN_EIN')) ?>
   </label>
 </div>
@@ -1000,17 +1101,52 @@ $pw_sperrfelder = array(
 foreach ($pw_sperrfelder as $pw_sf): ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="<?= pw_e($pw_sf[0]) ?>" value="1" <?= !empty($pw_cfg[$pw_sf[0]]) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="<?= pw_e($pw_sf[0]) ?>" value="1" <?= pw_fh('settings', $pw_sf[0], !empty($pw_cfg[$pw_sf[0]])) ? 'checked' : '' ?>>
     <?= pw_e(pw_t($pw_sf[1])) ?>
   </label>
 </div>
 <?php endforeach; ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="quittung_noetig" value="1" <?= !empty($pw_cfg['quittung_noetig']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="quittung_noetig" value="1" <?= pw_fh('settings', 'quittung_noetig', !empty($pw_cfg['quittung_noetig'])) ? 'checked' : '' ?>>
     <?= pw_e(pw_t('EINST.L_QUITTUNG')) ?>
   </label>
   <div class="sm-hilfe"><?= pw_t('EINST.H_QUITTUNG') ?></div>
+</div>
+
+<?php /* c1 (Verbesserungsbau 30.09.2026): Alarm zusaetzlich ueber SignalBot,
+   ab Werk aus. Die Felder gelten fuer das ganze Plugin, nicht fuer die
+   gewaehlte Pumpe; die Nachricht nennt die Pumpe. Das Token steht nie im
+   HTML - ein leeres Feld heisst "unveraendert". */ ?>
+<h2><?= pw_e(pw_t('EINST.H_SIGNAL')) ?></h2>
+<div class="sm-hinweis"><?= pw_t('EINST.SIGNAL_TEXT') ?></div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_ein" value="1" <?= pw_fh('settings', 'signal_ein', !empty($pw_cfg['signal_ein'])) ? 'checked' : '' ?>>
+    <?= pw_e(pw_t('EINST.L_SIGNAL_EIN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label><?= pw_e(pw_t('EINST.L_SIGNAL_ORDNER')) ?></label>
+  <input data-role="none" type="text" name="signal_ordner" value="<?= pw_e(pw_fw('settings', 'signal_ordner', $pw_cfg['signal_ordner'])) ?>"<?= pw_fk('settings', 'signal_ordner') ?> placeholder="signalbot">
+  <div class="sm-hilfe"><?= pw_t('EINST.H_SIGNAL_ORDNER') ?></div>
+</div>
+<div class="sm-feld">
+  <label><?= pw_e(pw_t('EINST.L_SIGNAL_TOKEN')) ?></label>
+  <input data-role="none" type="password" name="signal_token" value="" autocomplete="off"<?= pw_fk('settings', 'signal_token') ?> placeholder="<?= trim((string) $pw_cfg['signal_token']) !== '' ? pw_e(pw_t('EINST.PH_UNVERAENDERT')) : '' ?>">
+  <div class="sm-hilfe"><?= pw_t('EINST.H_SIGNAL_TOKEN') ?></div>
+</div>
+<div class="sm-feld">
+  <label><?= pw_e(pw_t('EINST.L_SIGNAL_AN')) ?></label>
+  <input data-role="none" type="text" name="signal_an" value="<?= pw_e(pw_fw('settings', 'signal_an', $pw_cfg['signal_an'])) ?>"<?= pw_fk('settings', 'signal_an') ?> placeholder="+49...">
+  <div class="sm-hilfe"><?= pw_t('EINST.H_SIGNAL_AN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="signal_dringend" value="1" <?= pw_fh('settings', 'signal_dringend', !empty($pw_cfg['signal_dringend'])) ? 'checked' : '' ?>>
+    <?= pw_e(pw_t('EINST.L_SIGNAL_DRINGEND')) ?>
+  </label>
+  <div class="sm-hilfe"><?= pw_t('EINST.H_SIGNAL_DRINGEND') ?></div>
 </div>
 
 <div class="sm-knopfreihe">
@@ -1021,6 +1157,18 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 <h2><?= pw_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= pw_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= pw_t('EINST.SICH_WARNUNG') ?></div>
+<?php
+/* X-3 (Verbesserungsbau 30.09.2026): besteht die eigene Sicherung das eigene
+ * Zurueckspielen? Dieselbe Pruefung wie beim Zurueckspielen
+ * (pw_sicherung_selbstpruefung()). Eine Warnung - der Knopf liefert die
+ * Datei trotzdem. Die Beanstandungen kommen aus pw_sicherung_lesen() mit
+ * maskierten Teilen; sie werden wie im Rueckspielweg erst entschluesselt
+ * und dann EINMAL maskiert ausgegeben. */
+$pw_sich_mangel = pw_sicherung_selbstpruefung();
+if ($pw_sich_mangel) { ?>
+<div class="sm-warnung"><b><?= pw_e(pw_t('EINST.SICH_SELBST_WARN')) ?></b><ul style="margin:6px 0 0 18px;padding:0;"><?php
+    foreach ($pw_sich_mangel as $pw_z) { echo '<li>' . pw_e(html_entity_decode(strip_tags((string) $pw_z), ENT_QUOTES, 'UTF-8')) . '</li>'; } ?></ul></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1064,13 +1212,13 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($pw_cfg['mqtt_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= pw_fh('mqtt', 'mqtt_ein', !empty($pw_cfg['mqtt_ein'])) ? 'checked' : '' ?>>
     <?= pw_e(pw_t('MQTT.L_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('MQTT.L_TOPIC')) ?></label>
-  <input data-role="none" type="text" name="mqtt_topic" value="<?= pw_e($pw_cfg['mqtt_topic']) ?>" placeholder="pumpe">
+  <input data-role="none" type="text" name="mqtt_topic" value="<?= pw_e(pw_fw('mqtt', 'mqtt_topic', $pw_cfg['mqtt_topic'])) ?>"<?= pw_fk('mqtt', 'mqtt_topic') ?> placeholder="pumpe">
   <div class="sm-hilfe"><?= pw_t('MQTT.H_TOPIC') ?></div>
 </div>
 <div class="sm-knopfreihe">
@@ -1348,6 +1496,23 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 </div>
 <?php endif; ?>
 
+<?php /* b1 (Verbesserungsbau 30.09.2026): der letzte Alarm DIESER Pumpe - aus
+   alarm.json im Datenordner, die ein Update ueberlebt (Entscheidung 13).
+   Kein Netz, deshalb in jedem Seitenaufbau. */
+$pw_la = pw_alarm_lesen($pw_pid);
+$pw_la = $pw_la['aktuell']; ?>
+<h2><?= pw_e(pw_t('TEST.H_LETZTER_ALARM')) ?></h2>
+<?php if ($pw_la === null) { ?>
+<div class="sm-hinweis"><?= pw_e(pw_t('TEST.LA_KEINER')) ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><td style="width:30%"><?= pw_e(pw_t('TEST.LA_ART')) ?></td><td><b><?= pw_e(pw_t($pw_befunde[pw_befund_zahl($pw_la['art'])])) ?></b></td></tr>
+<tr><td><?= pw_e(pw_t('TEST.LA_BEGINN')) ?></td><td><?= pw_e(date('d.m.Y H:i:s', $pw_la['beginn'])) ?></td></tr>
+<tr><td><?= pw_e(pw_t('TEST.LA_ENDE')) ?></td><td class="<?= $pw_la['ende'] > 0 ? 'sm-an' : 'sm-aus' ?>"><?= $pw_la['ende'] > 0 ? pw_e(date('d.m.Y H:i:s', $pw_la['ende'])) : pw_e(pw_t('TEST.LA_DAUERT')) ?></td></tr>
+</table>
+<?php } ?>
+<div class="sm-hilfe"><?= pw_t('TEST.LA_TEXT') ?></div>
+
 <h2><?= pw_e(pw_t('TEST.H_PRUEFUNG')) ?></h2>
 <div class="sm-hilfe"><?= pw_t('TEST.H_PRUEFUNG_TEXT') ?></div>
 <?php
@@ -1406,7 +1571,7 @@ foreach ($pw_zeilen as $pw_zz) {
 <form action="index.php" method="post" style="margin:0;display:flex;gap:10px;align-items:center;">
   <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
-  <input data-role="none" type="text" name="watt" placeholder="<?= pw_e(pw_t('TEST.PLATZHALTER_WATT')) ?>" style="max-width:140px;">
+  <input data-role="none" type="text" name="watt" value="<?= pw_e(pw_fw('test', 'watt', '')) ?>"<?= pw_fk('test', 'watt') ?> placeholder="<?= pw_e(pw_t('TEST.PLATZHALTER_WATT')) ?>" style="max-width:140px;">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testwert" value="1"><?= pw_t('TEST.K_WERT') ?></button>
 </form>
 <form action="index.php" method="post" style="margin:0;">

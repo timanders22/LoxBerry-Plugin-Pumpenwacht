@@ -219,6 +219,16 @@ function pw_grenzen()
         'mqtt_topic'         => array('art' => 'text', 'muster' => '#^[\w/\-]{1,64}$#'),
         'aktionstoken'       => array('art' => 'text', 'muster' => '#^[0-9a-f]{0,64}$#'),
         'formgeheim'         => array('art' => 'text', 'muster' => '#^[0-9a-f]{0,64}$#'),
+        /* c1 (Verbesserungsbau 30.09.2026): Alarm zusaetzlich ueber SignalBot.
+         * Ordner leer = Vorgabe "signalbot"; die Rufnummer in DERSELBEN Form,
+         * die SignalBot selbst verlangt (sonst antwortet er 400), leer = alle
+         * dort freigegebenen; das Token in der Form, die SignalBot erzeugt
+         * (48 Hex-Zeichen), mit Spielraum wie bei Intercom 2.2.15. */
+        'signal_ein'         => array('art' => 'haken'),
+        'signal_dringend'    => array('art' => 'haken'),
+        'signal_ordner'      => array('art' => 'text', 'muster' => '#^([a-z0-9][a-z0-9_\-]{0,39})?$#'),
+        'signal_token'       => array('art' => 'text', 'muster' => '#^[A-Za-z0-9_.\-]{0,128}$#'),
+        'signal_an'          => array('art' => 'text', 'muster' => '#^(\+[0-9]{6,20})?$#'),
     );
 }
 
@@ -336,6 +346,13 @@ function pw_vorgaben()
          * Aktionstoken und nicht an seiner Stelle: das Aktionstoken geht in
          * jede Loxone-Adresse, dieses hier geht nirgendwohin. */
         'formgeheim'      => '',
+        /* c1 (Verbesserungsbau 30.09.2026): ab Werk AUS (vb_RAHMEN, D-Punkte) -
+         * eine eingerichtete Anlage verhaelt sich nach dem Update wie vorher. */
+        'signal_ein'      => 0,
+        'signal_dringend' => 0,
+        'signal_ordner'   => 'signalbot',
+        'signal_token'    => '',
+        'signal_an'       => '',
     );
 }
 
@@ -356,7 +373,10 @@ function pw_global_schluessel()
      * stehen in den Adressen, die der Miniserver aufruft. Und mqtt_ein ist
      * der Schalter "veroeffentlicht dieses Plugin ueberhaupt"; unter welchem
      * Praefix, entscheidet die Pumpe. */
-    return array('aktionstoken', 'formgeheim', 'mqtt_ein');
+    /* Die SignalBot-Kopplung (c1) gilt fuer das Plugin, nicht fuer eine
+     * Pumpe: EIN Bot, EIN Empfaenger; die Nachricht nennt die Pumpe. */
+    return array('aktionstoken', 'formgeheim', 'mqtt_ein',
+                 'signal_ein', 'signal_dringend', 'signal_ordner', 'signal_token', 'signal_an');
 }
 
 /** Die Werksvorgaben EINER Pumpe. */
@@ -571,6 +591,15 @@ function pw_pumpe_entfernen($id, $cfg = null)
         unset($tv['pumpen'][$id]);
         if (!pw_json_schreiben(pw_paths()['tage'], $tv)) {
             pw_log('Pumpe ' . $id . ' entfernt, ihre Tagesbilanz blieb liegen.');
+        }
+    }
+    /* b1: ihr letzter Alarm geht mit - eine spaeter mit derselben Kennung
+     * angelegte Pumpe erbte ihn sonst. */
+    $ad = pw_json_lesen(pw_alarm_datei());
+    if (isset($ad['pumpen'][$id])) {
+        unset($ad['pumpen'][$id]);
+        if (!pw_json_schreiben(pw_alarm_datei(), $ad, 0664)) {
+            pw_log('Pumpe ' . $id . ' entfernt, ihr letzter Alarm blieb liegen.');
         }
     }
     pw_log('Pumpe entfernt: ' . $id . '.');
@@ -1217,6 +1246,10 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
         list($versucht, $fehl, $meta) = pw_publizieren($neu, $cfg, $jetzt, $erzwingen);
         $neu = array_merge($neu, $meta);
         if (!pw_stand_speichern($neu, $pw_pid)) { return array(null, 'speichern', $versucht, $fehl); }
+        /* b1 (Verbesserungsbau 30.09.2026): den letzten Alarm festhalten -
+         * noch unter derselben Sperre, nach dem gespeicherten Zustand. Ein
+         * Fehlschlag hier ist kein Fehlschlag des Durchlaufs (Protokoll). */
+        pw_alarm_merken($pw_pid === null ? pw_erste_id() : $pw_pid, $neu, $jetzt);
         return array($neu, '', $versucht, $fehl);
     } finally {
         pw_sperre_geben($fh);
@@ -1486,7 +1519,11 @@ function pw_token_erzeugen() { return bin2hex(random_bytes(12)); }
 function pw_token_ok($cfg)
 {
     $soll = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
-    $ist  = isset($_GET['token']) ? (string) $_GET['token'] : '';
+    /* Klasse 12 (Verbesserungsbau 30.09.2026): eine Liste ist kein Token. Bis
+     * 1.0.5 machte (string) daraus "Array" samt PHP-Warnung vor dem 403 - mit
+     * display_errors stand der Serverpfad in der Antwort, und der Code blieb
+     * 200 (headers already sent). */
+    $ist  = (isset($_GET['token']) && is_string($_GET['token'])) ? $_GET['token'] : '';
     if ($soll === '' || $ist === '') { return false; }
     return hash_equals($soll, $ist);
 }
@@ -1965,7 +2002,13 @@ function pw_felder($stand, $cfg, $jetzt = null)
     $quelle = pw_zahl(isset($stand['quelle_ts']) ? $stand['quelle_ts']
                       : (isset($stand['zeit']) ? $stand['zeit'] : 0), 0.0);
     $alter = $quelle > 0 ? (int) ($jetzt - $quelle) : -1;
-    $veraltet = ($alter < 0 || $alter > (int) pw_zahl(isset($cfg['stale_s']) ? $cfg['stale_s'] : 300, 300.0));
+    /* Nachtrag vb_pw2 (30.09.2026, Offen 7): ein Messwert bis 5 s "aus der
+     * Zukunft" ist frisch - ein kleiner Uhrruecksprung zwischen Anlieferung
+     * und Lesen (gemessen in WSL: rund 1 s) machte ihn sonst "unbekannt",
+     * waehrend pw_verarbeiten() ihn als frisch fortschreibt. Nie ein Wert
+     * (quelle_ts 0) und alles weiter in der Zukunft bleiben unbekannt. */
+    $veraltet = ($quelle <= 0 || $alter < -5
+                 || $alter > (int) pw_zahl(isset($cfg['stale_s']) ? $cfg['stale_s'] : 300, 300.0));
     // Veraltet heisst unbekannt - nie "steht" (siehe Kern, pw_laeuft).
     $laeuft = $veraltet ? -1 : (isset($stand['laeuft']) ? (int) $stand['laeuft'] : -1);
     $befund = $veraltet ? PW_STILL : (isset($stand['befund']) ? (string) $stand['befund'] : PW_STILL);
@@ -2396,7 +2439,8 @@ function pw_sicherung_bauen($cfg = null)
         '_fassung' => pw_fassung(),
         '_stand'   => date('Y-m-d H:i:s'),
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Pumpenwaechter. '
-                    . 'Sie enthaelt das Aktionstoken - wie ein Kennwort behandeln.',
+                    . 'Sie enthaelt das Aktionstoken und gegebenenfalls das Token fuer '
+                    . 'SignalBot - wie ein Kennwort behandeln.',
     );
     $aus = array_merge($kopf, $cfg);
     /* O5 (1.0.4): das Geheimnis des Formularmerkmals gehoert NICHT hinein
@@ -2525,6 +2569,13 @@ function pw_sicherung_lesen($roh)
         if ($k === 'aktionstoken' && is_string($w) && trim($w) === ''
             && trim((string) (isset($neu[$k]) ? $neu[$k] : '')) !== '') {
             $mangel[] = sprintf(pw_t('EINST.SICH_LEER_GEHEIM'), pw_e($k));
+            continue;
+        }
+        /* c1: ein LEERES SignalBot-Token ueberschreibt kein gespeichertes - es
+         * wird uebergangen und als unveraendert genannt (wie ein leeres
+         * Kennwortfeld im Formular). */
+        if ($k === 'signal_token' && is_string($w) && trim($w) === ''
+            && trim((string) (isset($neu[$k]) ? $neu[$k] : '')) !== '') {
             continue;
         }
         list($wert, $grund) = pw_wert_pruefen($k, $w);
@@ -2912,6 +2963,13 @@ function pw_selbstpruefung($cfg = null)
      * stand dann ein Strich. */
     list($pw_cok, $pw_ctext) = pw_cron_lage();
     $add('PRUEF.CRON', $pw_cok, $pw_ctext);
+
+    /* c1 (Verbesserungsbau 30.09.2026): traegt die Kopplung an SignalBot?
+     * Aus: Strich. An: der Selbsttest von SignalBot (loest dort nichts aus)
+     * und das Ergebnis der letzten Meldung. Ein Kreuz heisst: die Meldung
+     * ueber Signal traegt nicht - der Weg nach Loxone ist davon unberuehrt. */
+    list($pw_sok, $pw_stext) = pw_pruefe_signal($cfg);
+    $add('PRUEF.SIGNAL', $pw_sok, $pw_stext);
 
     /* --- Der Kern --- */
     list($kn, $kf) = pw_selbsttest(false);
@@ -4426,7 +4484,8 @@ function pw_meldung_ablegen($daten)
 {
     $c = pw_config(false);
     $geheim = array();
-    foreach (array('aktionstoken', 'formgeheim') as $k) {
+    /* c1: das SignalBot-Token ist ein Geheimnis wie die beiden eigenen. */
+    foreach (array('aktionstoken', 'formgeheim', 'signal_token') as $k) {
         if (isset($c[$k]) && is_string($c[$k]) && $c[$k] !== '') { $geheim[] = $c[$k]; }
     }
     $f = pw_formtoken(pw_pumpe($c));
@@ -4445,6 +4504,30 @@ function pw_meldung_ablegen($daten)
     }
     $aus['testausgabe'] = isset($daten['testausgabe']) ? (string) $daten['testausgabe'] : '';
     foreach ($geheim as $g) { $aus['testausgabe'] = str_replace($g, '***', $aus['testausgabe']); }
+    /* X-2 (Regeln/04, Verbesserungsbau 30.09.2026): die eingetippten Werte
+     * EINES beanstandeten Formulars. Nur Zeichenketten und Haken, keine
+     * Steuerzeichen, hoechstens 4096 Zeichen; ein gespeichertes Geheimnis wird
+     * auch hier ersetzt. Die Tokenfelder sammelt die Oberflaeche gar nicht. */
+    if (isset($daten['eingaben']) && is_array($daten['eingaben'])
+        && isset($daten['eingaben']['form']) && is_string($daten['eingaben']['form'])) {
+        $ein = $daten['eingaben'];
+        $e = array('form' => $ein['form'],
+                   'pumpe' => isset($ein['pumpe']) && is_string($ein['pumpe']) ? $ein['pumpe'] : '',
+                   'falsch' => array(), 'werte' => array(), 'haken' => array());
+        foreach (isset($ein['falsch']) && is_array($ein['falsch']) ? $ein['falsch'] : array() as $x) {
+            if (is_string($x)) { $e['falsch'][] = $x; }
+        }
+        foreach (isset($ein['werte']) && is_array($ein['werte']) ? $ein['werte'] : array() as $k => $v) {
+            if (!is_string($k) || !is_string($v)) { continue; }
+            $v = substr(preg_replace('/[\x00-\x1F\x7F]/', '', $v), 0, 4096);
+            foreach ($geheim as $g) { $v = str_replace($g, '***', $v); }
+            $e['werte'][$k] = $v;
+        }
+        foreach (isset($ein['haken']) && is_array($ein['haken']) ? $ein['haken'] : array() as $k => $v) {
+            if (is_string($k)) { $e['haken'][$k] = !empty($v); }
+        }
+        $aus['eingaben'] = $e;
+    }
     $js = json_encode($aus, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     return is_string($js) && pw_datei_schreiben(pw_meldung_datei(), $js, 0600);
 }
@@ -4458,4 +4541,436 @@ function pw_meldung_abholen()
     @unlink($f);
     if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) { return null; }
     return $d;
+}
+
+/* ==================================================================
+ * X-3 (Verbesserungsbau 30.09.2026): besteht die eigene Sicherung das
+ * eigene Zurueckspielen?
+ * ==================================================================
+ *
+ * Ueber DIESELBE Funktion wie das Zurueckspielen (pw_sicherung_lesen()), mit
+ * der Datei, die der Knopf "Einstellungen sichern" gerade liefern wuerde.
+ * Rueckgabe: die Beanstandungen (leer = die Sicherung liesse sich
+ * zurueckspielen). Der Knopf liefert die Datei trotzdem - die Oberflaeche
+ * warnt nur (vb_RAHMEN, X-3).
+ */
+function pw_sicherung_selbstpruefung()
+{
+    $js = json_encode(pw_sicherung_bauen(pw_config()), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($js)) { return array(pw_t('EINST.SICH_SCHREIBFEHLER')); }
+    list($neu, $mangel) = pw_sicherung_lesen($js);
+    return $neu === null ? (array) $mangel : array();
+}
+
+/* ==================================================================
+ * b1 (Verbesserungsbau 30.09.2026): der letzte Alarm je Pumpe
+ * ==================================================================
+ *
+ * Der Reiter Test zeigt Beginn, Art und Ende des letzten Alarms. Er steht in
+ * einer kleinen Merkdatei im Datenordner (alarm.json), die ein Update
+ * ueberlebt wie Zaehler und Tagesbilanz: preupgrade.sh legt sie in den
+ * Bestand, postupgrade.sh spielt sie zurueck (Entscheidung 13).
+ *
+ * Alarm heisst: Befund ungleich "ok". "keine Meldung" (die Quelle schweigt,
+ * Entscheidung 12) zaehlt erst, wenn je ein Messwert kam - ohne je eine
+ * Messung ist es eine Einrichtungsfrage und kein Ausfall; dieselbe Regel wie
+ * beim Ruhe-Alarm (ein Waechter, der beim Einschalten Alarm gibt, wird
+ * abgeschaltet).
+ *
+ * Geschrieben wird NUR aus pw_verarbeiten(), also unter der Sperre des
+ * Zustands, und nur, wenn sich die Lage aendert. Verglichen wird mit dem
+ * offenen Alarm IN DER DATEI, nicht mit dem vorigen Befund: steht beim
+ * ersten Durchlauf nach dem Update schon ein Alarm an, wird er so auch
+ * aufgenommen (Beginn = erster gesehener Zeitpunkt). Wechselt ein Alarm die
+ * Art (Dauerlauf -> keine Meldung), endet der eine und beginnt der andere.
+ *
+ * Form: {"pumpen": {"<id>": {"nr": n, "aktuell": {...}, "vorher": {...}}}},
+ * je Alarm nr, art (Befundkennung), beginn, ende (0 = dauert an), beiwert.
+ */
+function pw_alarm_datei() { return pw_paths()['datadir'] . '/alarm.json'; }
+
+/** Ist dieser Zustand ein Alarm? */
+function pw_ist_alarm($stand)
+{
+    $b = isset($stand['befund']) ? (string) $stand['befund'] : '';
+    if ($b === '' || $b === PW_OK) { return false; }
+    if ($b === PW_STILL) {
+        return pw_zahl(isset($stand['quelle_ts']) ? $stand['quelle_ts'] : 0, 0.0) > 0;
+    }
+    return true;
+}
+
+/** Die Alarmdaten EINER Pumpe - jeder Teil geprueft, nie eine halbe Zeile. */
+function pw_alarm_lesen($id)
+{
+    $d = pw_json_lesen(pw_alarm_datei());
+    $e = (isset($d['pumpen'][$id]) && is_array($d['pumpen'][$id])) ? $d['pumpen'][$id] : array();
+    foreach (array('aktuell', 'vorher') as $k) {
+        if (!isset($e[$k]) || !is_array($e[$k]) || !isset($e[$k]['art'], $e[$k]['beginn'], $e[$k]['nr'])
+            || !is_string($e[$k]['art'])) {
+            $e[$k] = null;
+            continue;
+        }
+        $e[$k] = array('nr' => (int) $e[$k]['nr'], 'art' => (string) $e[$k]['art'],
+                       'beginn' => (int) pw_zahl($e[$k]['beginn'], 0.0),
+                       'ende' => (int) pw_zahl(isset($e[$k]['ende']) ? $e[$k]['ende'] : 0, 0.0),
+                       'beiwert' => pw_zahl(isset($e[$k]['beiwert']) ? $e[$k]['beiwert'] : 0, 0.0));
+    }
+    $e['nr'] = isset($e['nr']) ? (int) pw_zahl($e['nr'], 0.0) : 0;
+    return array('nr' => $e['nr'], 'aktuell' => $e['aktuell'], 'vorher' => $e['vorher']);
+}
+
+/** Aus pw_verarbeiten(), unter der Sperre des Zustands. */
+function pw_alarm_merken($id, $neu, $jetzt)
+{
+    $art = pw_ist_alarm($neu) ? (string) $neu['befund'] : '';
+    $e = pw_alarm_lesen($id);
+    $akt = $e['aktuell'];
+    $offen = ($akt !== null && $akt['ende'] <= 0) ? $akt['art'] : '';
+    if ($offen === $art) { return true; }
+    if ($offen !== '') { $akt['ende'] = (int) $jetzt; }
+    if ($art !== '') {
+        $e['vorher'] = $akt;
+        $e['nr'] = max($e['nr'], $akt !== null ? $akt['nr'] : 0) + 1;
+        $akt = array('nr' => $e['nr'], 'art' => $art, 'beginn' => (int) $jetzt, 'ende' => 0,
+                     'beiwert' => round(pw_zahl(isset($neu['beiwert']) ? $neu['beiwert'] : 0, 0.0), 1));
+    }
+    $e['aktuell'] = $akt;
+    $d = pw_json_lesen(pw_alarm_datei());
+    if (!isset($d['pumpen']) || !is_array($d['pumpen'])) { $d['pumpen'] = array(); }
+    $d['pumpen'][$id] = $e;
+    if (!pw_json_schreiben(pw_alarm_datei(), $d, 0664)) {
+        static $gemeldet = false;
+        if (!$gemeldet) {
+            $gemeldet = true;
+            pw_log('WARNUNG: Der letzte Alarm liess sich nicht festhalten (' . pw_alarm_datei()
+                   . ') - der Reiter Test zeigt ihn nicht, und SignalBot meldet ihn nicht.');
+        }
+        return false;
+    }
+    return true;
+}
+
+/* ==================================================================
+ * c1 (Verbesserungsbau 30.09.2026): Alarm zusaetzlich ueber SignalBot
+ * ==================================================================
+ *
+ * Ab Werk AUS (vb_RAHMEN, D-Punkte). Der Weg ist der vorhandene HTTP-Endpunkt
+ * von SignalBot, gelesen in LoxBerry-Plugin-SignalBot-0.9.25,
+ * webfrontend/html/index.php:
+ *
+ *   /plugins/<ordner>/index.php?token=..&aktion=senden&text=..[&an=+49..][&dringend=1]
+ *        -> 200 "SIGNAL;OK=1;AKTION=senden;..."; Fehler 4xx/5xx "SIGNAL;OK=0;GRUND=.."
+ *   /plugins/<ordner>/index.php?selftest=1&token=..  -> "SELFTEST;OK=1;TOKEN=OK"
+ *
+ * Vorbild Intercom 2.2.15 (Klingel-1): nie ueber die Dateien von SignalBot;
+ * das Token traegt der Anwender aus dessen Oberflaeche ein. Gerufen wird ueber
+ * 127.0.0.1 und den Port des LoxBerry-Webservers, ohne einer Umleitung zu
+ * folgen (das Token steht in der Adresse). Gruppen kennt der Endpunkt von
+ * SignalBot nicht: Empfaenger ist EINE dort freigegebene Rufnummer oder -
+ * leer - alle freigegebenen.
+ *
+ * Gesendet wird NUR aus dem Minutentakt, nach dem MQTT-Weg aller Pumpen: der
+ * Endpunkt fuer Loxone und der Zuhoerer warten nie auf SignalBot. Fehlt
+ * SignalBot oder schweigt er, laufen Loxone-Weg und Rueckgabewert des Takts
+ * wie ohne die Einstellung; es bleiben eine Protokollzeile und die Zeile im
+ * Reiter Test.
+ *
+ * Je Pumpe eine Nachricht beim Beginn und eine beim Ende eines Alarms.
+ * Hoechstens EIN Beginn je Pumpe und Alarmart je 30 min. Ein gebremster
+ * Beginn wird nachgeholt, wenn der Alarm nach Ablauf der 30 min noch
+ * ansteht, und entfaellt samt Ende, wenn er vorher endet - so bleibt nie ein
+ * laufender Alarm ungemeldet, nachdem ein "beendet" hinausging. Ein Ende geht
+ * nur zu einem gemeldeten Beginn. Wiederholt wird nicht: jeder Versuch
+ * zaehlt; antwortet SignalBot gar nicht, wartet der Rest bis zum naechsten
+ * Takt (hoechstens eine Zeitgrenze je Takt).
+ */
+if (!defined('PW_SIGNAL_BREMSE_S')) { define('PW_SIGNAL_BREMSE_S', 1800); }
+
+function pw_signal_datei() { return pw_paths()['datadir'] . '/signal.json'; }
+
+/** Ein Plugin-Ordner: Kleinbuchstaben, Ziffern, _ und -. */
+function pw_nachbar_ordner_gueltig($o)
+{
+    return is_string($o) && preg_match('/^[a-z0-9][a-z0-9_\-]{0,39}$/D', $o) === 1;
+}
+
+/** Der Ordner von SignalBot - leer oder unzulaessig heisst die Vorgabe. */
+function pw_signal_ordner($cfg)
+{
+    $o = isset($cfg['signal_ordner']) && is_string($cfg['signal_ordner']) ? trim($cfg['signal_ordner']) : '';
+    return pw_nachbar_ordner_gueltig($o) ? $o : 'signalbot';
+}
+
+/** Der Port des LoxBerry-Webservers - GELESEN, nicht angenommen. */
+function pw_webport()
+{
+    $d = pw_json_lesen(pw_paths()['general']);
+    return (isset($d['Webserver']['Port']) && (int) $d['Webserver']['Port'] > 0)
+         ? (int) $d['Webserver']['Port'] : 80;
+}
+
+/**
+ * Den Endpunkt einer anderen Linie rufen. Rueckgabe array(code, rumpf, fehler);
+ * code 0 = keine Antwort. Die Adresse (mit Token) geht nirgends hin - nicht
+ * ins Protokoll, nicht in die Fehlermeldung. Bauform ic_nachbar_rufen()
+ * (Intercom 2.2.15); ohne $http_response_header (PHP 8.5).
+ */
+function pw_nachbar_rufen($ordner, array $parameter, $zeitgrenze = 5)
+{
+    if (!pw_nachbar_ordner_gueltig($ordner)) { return array(0, '', 'Ordner unzulaessig'); }
+    $port = pw_webport();
+    $url = 'http://127.0.0.1' . ($port === 80 ? '' : ':' . $port) . '/plugins/' . $ordner
+         . '/index.php?' . http_build_query($parameter, '', '&', PHP_QUERY_RFC3986);
+    $antwort = false;
+    $code = 0;
+    $fehler = '';
+    set_error_handler(function () { return true; });
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => $zeitgrenze,
+            CURLOPT_CONNECTTIMEOUT => min(2, $zeitgrenze),
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_USERAGENT => 'LoxBerry Pumpenwaechter',
+        ));
+        $antwort = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $fehler = (string) curl_error($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+    } else {
+        $ctx = stream_context_create(array('http' => array(
+            'method' => 'GET', 'timeout' => $zeitgrenze, 'ignore_errors' => true,
+            'follow_location' => 0, 'max_redirects' => 1, 'user_agent' => 'LoxBerry Pumpenwaechter')));
+        $t0 = microtime(true);
+        $f = fopen($url, 'r', false, $ctx);
+        if ($f === false) {
+            $fehler = (microtime(true) - $t0 >= $zeitgrenze - 0.5)
+                    ? 'Zeitgrenze ' . $zeitgrenze . ' s' : 'keine Verbindung';
+        } else {
+            $meta = stream_get_meta_data($f);
+            foreach (isset($meta['wrapper_data']) ? (array) $meta['wrapper_data'] : array() as $z) {
+                if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) { $code = (int) $m[1]; }
+            }
+            $antwort = (string) stream_get_contents($f, 2000);
+            if (!empty($meta['timed_out']) || ($code === 0 && $antwort === '')) { $fehler = 'Zeitgrenze'; }
+            fclose($f);
+        }
+    }
+    restore_error_handler();
+    $fehler = preg_replace('#[a-z][a-z0-9+.\-]*://\S+#i', '<Adresse>', (string) $fehler);
+    return array($code, is_string($antwort) ? substr($antwort, 0, 2000) : '',
+                 substr(str_replace(array("\t", "\n", "\r"), ' ', $fehler), 0, 160));
+}
+
+/** Das Ergebnis eines Aufrufs in einer Zeile - ohne Adresse, ohne Token. */
+function pw_signal_grund($code, $rumpf, $fehler)
+{
+    if ((int) $code === 0) {
+        return pw_t('PRUEF.T_KEINE_ANTWORT') . ((string) $fehler !== '' ? ' (' . substr((string) $fehler, 0, 120) . ')' : '');
+    }
+    $g = preg_match('/(?:GRUND|ERR)=([A-Z_]{1,40})/', (string) $rumpf, $m) ? $m[1] : '';
+    return 'HTTP ' . (int) $code . ($g !== '' ? ' ' . $g : '')
+         . ((int) $code === 404 ? ' - ' . pw_t('PRUEF.SIGNAL_404') : '');
+}
+
+/**
+ * Die Sprache der Nachricht. In der Oberflaeche die des LoxBerry
+ * (LBSystem); im Minutentakt ist LBSystem nicht geladen - dort steht sie in
+ * config/system/general.json (Base.Lang). Sonst Deutsch.
+ */
+function pw_signal_sprache()
+{
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) { return pw_sprache(); }
+    $g = pw_json_lesen(pw_paths()['general']);
+    $s = isset($g['Base']['Lang']) && is_string($g['Base']['Lang']) ? strtolower(substr($g['Base']['Lang'], 0, 2)) : 'de';
+    return $s === 'en' ? 'en' : 'de';
+}
+
+/** Wie pw_t(), aber in einer GENANNTEN Sprache (fuer den Minutentakt). */
+function pw_t_in($schluessel, $sprache)
+{
+    static $cache = array();
+    if (!isset($cache[$sprache])) {
+        $t = array();
+        $dir = pw_langdir();
+        if ($dir !== '') {
+            $de = @parse_ini_file($dir . '/language_de.ini', true, INI_SCANNER_RAW) ?: array();
+            $en = @parse_ini_file($dir . '/language_en.ini', true, INI_SCANNER_RAW) ?: array();
+            $t = ($sprache === 'en') ? array_replace_recursive($de, $en) : array_replace_recursive($en, $de);
+        }
+        $cache[$sprache] = $t;
+    }
+    list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($cache[$sprache][$a][$s]) ? $cache[$sprache][$a][$s] : $schluessel;
+}
+
+/** Der Text der Nachricht - aus der Sprachdatei, ohne Auszeichnung. */
+function pw_signal_text($was, $pumpe, $art, $beginn, $ende)
+{
+    $sp = pw_signal_sprache();
+    $schl = pw_befund_schluessel();
+    $artname = pw_t_in($schl[pw_befund_zahl((string) $art)], $sp);
+    $t = ($was === 'ende')
+       ? sprintf(pw_t_in('SIGNAL.ENDE', $sp), $artname, $pumpe, date('d.m.Y H:i', (int) $beginn), date('d.m.Y H:i', (int) $ende))
+       : sprintf(pw_t_in('SIGNAL.BEGINN', $sp), $artname, $pumpe, date('d.m.Y H:i', (int) $beginn));
+    return trim(html_entity_decode(strip_tags($t), ENT_QUOTES, 'UTF-8'));
+}
+
+/** Eine Meldung abgeben. Rueckgabe array(ok, code, rumpf, fehler). */
+function pw_signal_senden($voll, $was, $pumpe, $art, $beginn, $ende)
+{
+    $par = array('token' => (string) $voll['signal_token'], 'aktion' => 'senden',
+                 'text' => pw_signal_text($was, $pumpe, $art, $beginn, $ende));
+    $an = isset($voll['signal_an']) && is_string($voll['signal_an']) ? trim($voll['signal_an']) : '';
+    if ($an !== '') { $par['an'] = $an; }
+    if ($was === 'beginn' && !empty($voll['signal_dringend'])) { $par['dringend'] = '1'; }
+    list($c, $r, $f) = pw_nachbar_rufen(pw_signal_ordner($voll), $par, 5);
+    $ok = ($c === 200 && strpos(ltrim($r), 'SIGNAL;OK=1') === 0);
+    return array($ok, $c, $r, $f);
+}
+
+/**
+ * Aus dem Minutentakt, NACH dem MQTT-Weg aller Pumpen. Rueckgabe
+ * array(versucht, gescheitert). Der Merker signal.json haelt je Pumpe den
+ * zuletzt gemeldeten Alarm (nr, art, beginn, ende gemeldet), die Bremse je
+ * Pumpe und Art und das Ergebnis der letzten Meldung fuer den Reiter Test -
+ * nie das Token.
+ */
+function pw_signal_takt($voll, $jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $datei = pw_signal_datei();
+    if (empty($voll['signal_ein']) || trim((string) (isset($voll['signal_token']) ? $voll['signal_token'] : '')) === '') {
+        /* Aus (oder ohne Token, das sagt der Reiter Test): nichts senden, nichts
+         * merken. Ein Merker aus einer frueheren Einschaltung faellt weg - sonst
+         * meldete das Wiedereinschalten Alarme aus der Zeit, in der es aus war. */
+        if (is_file($datei)) { @unlink($datei); }
+        return array(0, 0);
+    }
+    $fh = @fopen(pw_paths()['datadir'] . '/signal.lock', 'c');
+    if (!$fh) { return array(0, 0); }
+    if (!@flock($fh, LOCK_EX | LOCK_NB)) { @fclose($fh); return array(0, 0); }
+    $n = 0;
+    $fehl = 0;
+    try {
+        $s = pw_json_lesen($datei);
+        $alt = (isset($s['pumpen']) && is_array($s['pumpen'])) ? $s['pumpen'] : array();
+        $bremse = (isset($s['bremse']) && is_array($s['bremse'])) ? $s['bremse'] : array();
+        $ergebnis = (isset($s['ergebnis']) && is_array($s['ergebnis'])) ? $s['ergebnis'] : null;
+        $tot = false;
+        $pumpen = array();
+        $melden = function ($was, $p, $id, $art, $beginn, $ende) use ($voll, $jetzt, &$n, &$fehl, &$tot, &$ergebnis) {
+            list($ok, $c, $r, $f) = pw_signal_senden($voll, $was, pw_pumpe_name($p), $art, $beginn, $ende);
+            $n++;
+            $kennung = preg_match('/(?:GRUND|ERR)=([A-Z_]{1,40})/', (string) $r, $m) ? $m[1] : '';
+            $ergebnis = array('zeit' => $jetzt, 'ok' => $ok ? 1 : 0, 'code' => (int) $c, 'kennung' => $kennung,
+                              'fehler' => (string) $f, 'was' => $was, 'art' => (string) $art, 'pumpe' => (string) $id);
+            if ($ok) {
+                pw_log('SignalBot: Meldung abgegeben (' . ($was === 'ende' ? 'Ende' : 'Beginn') . ' ' . $art . ', ' . $id . ').');
+            } else {
+                $fehl++;
+                if ((int) $c === 0) { $tot = true; }
+                pw_log('SignalBot: die Meldung (' . ($was === 'ende' ? 'Ende' : 'Beginn') . ' ' . $art . ', ' . $id
+                       . ') kam nicht an: ' . pw_signal_grund($c, $r, $f)
+                       . '. Der Weg nach Loxone ist davon nicht betroffen; sie wird nicht wiederholt.');
+            }
+        };
+        foreach (pw_pumpe_ids($voll) as $id) {
+            $p = pw_pumpe($voll, $id);
+            $e = pw_alarm_lesen($id);
+            $akt = $e['aktuell'];
+            $erstmals = !isset($alt[$id]) || !is_array($alt[$id]);
+            $g = $erstmals ? array('nr' => 0, 'art' => '', 'beginn' => 0, 'ende' => 1, 'gebremst' => 0) : $alt[$id];
+            foreach (array('nr', 'beginn', 'ende', 'gebremst') as $k) { $g[$k] = isset($g[$k]) ? (int) $g[$k] : 0; }
+            $g['art'] = isset($g['art']) && is_string($g['art']) ? $g['art'] : '';
+            /* 1. Das Ende eines gemeldeten Alarms. */
+            if (!$tot && $g['nr'] > 0 && $g['ende'] === 0) {
+                $ep = null;
+                foreach (array($akt, $e['vorher']) as $x) {
+                    if ($x !== null && $x['nr'] === $g['nr']) { $ep = $x; }
+                }
+                if ($ep === null || $ep['ende'] > 0) {
+                    $melden('ende', $p, $id, $g['art'], $g['beginn'], $ep !== null ? $ep['ende'] : $jetzt);
+                    $g['ende'] = 1;
+                }
+            }
+            /* 2. Der Beginn eines Alarms, der noch nicht gemeldet ist. */
+            if ($akt !== null && $akt['nr'] !== $g['nr']) {
+                if ($erstmals && $akt['ende'] > 0) {
+                    /* Beim Einschalten schon vorbei: nur uebernehmen. */
+                    $g = array('nr' => $akt['nr'], 'art' => $akt['art'], 'beginn' => $akt['beginn'], 'ende' => 1, 'gebremst' => 0);
+                } else {
+                    $schl = $id . '|' . $akt['art'];
+                    $zuletzt = isset($bremse[$schl]) ? (int) $bremse[$schl] : 0;
+                    $frei = ($zuletzt <= 0 || ($jetzt - $zuletzt) >= PW_SIGNAL_BREMSE_S || ($jetzt - $zuletzt) < -300);
+                    if (!$frei) {
+                        if ($akt['ende'] > 0) {
+                            pw_log('SignalBot: Alarm ' . $akt['art'] . ' (' . $id . ') innerhalb von 30 min nach der letzten '
+                                   . 'Meldung dieser Art - nicht gemeldet, und er ist inzwischen vorbei.');
+                            $g = array('nr' => $akt['nr'], 'art' => $akt['art'], 'beginn' => $akt['beginn'], 'ende' => 1, 'gebremst' => 0);
+                        } elseif ($g['gebremst'] !== $akt['nr']) {
+                            pw_log('SignalBot: Alarm ' . $akt['art'] . ' (' . $id . ') innerhalb von 30 min nach der letzten '
+                                   . 'Meldung dieser Art - die Meldung folgt, wenn er dann noch ansteht.');
+                            $g['gebremst'] = $akt['nr'];
+                        }
+                    } elseif (!$tot) {
+                        $bremse[$schl] = $jetzt;
+                        $melden('beginn', $p, $id, $akt['art'], $akt['beginn'], 0);
+                        $g = array('nr' => $akt['nr'], 'art' => $akt['art'], 'beginn' => $akt['beginn'], 'ende' => 0, 'gebremst' => 0);
+                        if ($akt['ende'] > 0 && !$tot) {
+                            /* Zwischen zwei Takten begonnen und geendet. */
+                            $melden('ende', $p, $id, $akt['art'], $akt['beginn'], $akt['ende']);
+                            $g['ende'] = 1;
+                        }
+                    }
+                }
+            }
+            $pumpen[$id] = $g;
+        }
+        foreach ($bremse as $k => $t) {
+            if (!is_string($k) || ($jetzt - (int) $t) > 86400 || ($jetzt - (int) $t) < -86400) { unset($bremse[$k]); }
+        }
+        $aus = array('pumpen' => $pumpen, 'bremse' => $bremse);
+        if ($ergebnis !== null) { $aus['ergebnis'] = $ergebnis; }
+        if (!pw_json_schreiben($datei, $aus, 0600)) {
+            pw_log('WARNUNG: Der Merker fuer SignalBot liess sich nicht schreiben (' . $datei . ').');
+        }
+    } finally {
+        @flock($fh, LOCK_UN);
+        @fclose($fh);
+    }
+    return array($n, $fehl);
+}
+
+/**
+ * Die Zeile im Reiter Test. Rueckgabe wie die anderen Zeilen:
+ * 1 Haken, 0 Kreuz, 2 Strich (aus). Mit dem Selbsttest von SignalBot
+ * (?selftest=1 loest dort nichts aus, Zeitgrenze 3 s) und dem Ergebnis der
+ * letzten Meldung.
+ */
+function pw_pruefe_signal($cfg)
+{
+    if (empty($cfg['signal_ein'])) { return array(2, pw_t('PRUEF.SIGNAL_AUS')); }
+    $ordner = pw_signal_ordner($cfg);
+    $tok = isset($cfg['signal_token']) ? trim((string) $cfg['signal_token']) : '';
+    if ($tok === '') { return array(0, pw_t('PRUEF.SIGNAL_OHNE_TOKEN')); }
+    list($c, $r, $f) = pw_nachbar_rufen($ordner, array('token' => $tok, 'selftest' => '1'), 3);
+    if (!($c === 200 && strpos(ltrim($r), 'SELFTEST;OK=1') === 0)) {
+        return array(0, sprintf(pw_t('PRUEF.SIGNAL_NICHT'), $ordner, pw_signal_grund($c, $r, $f)));
+    }
+    $s = pw_json_lesen(pw_signal_datei());
+    $e = (isset($s['ergebnis']) && is_array($s['ergebnis'])) ? $s['ergebnis'] : null;
+    if ($e !== null && empty($e['ok'])) {
+        return array(0, sprintf(pw_t('PRUEF.SIGNAL_GESCHEITERT'), $ordner,
+            pw_signal_grund(isset($e['code']) ? (int) $e['code'] : 0,
+                            isset($e['kennung']) && is_string($e['kennung']) && $e['kennung'] !== '' ? 'GRUND=' . $e['kennung'] : '',
+                            isset($e['fehler']) ? (string) $e['fehler'] : ''),
+            date('d.m.Y H:i', isset($e['zeit']) ? (int) $e['zeit'] : 0)));
+    }
+    if ($e !== null) {
+        return array(1, sprintf(pw_t('PRUEF.SIGNAL_ZULETZT'), $ordner, date('d.m.Y H:i', isset($e['zeit']) ? (int) $e['zeit'] : 0)));
+    }
+    return array(1, sprintf(pw_t('PRUEF.SIGNAL_ERREICHT'), $ordner));
 }

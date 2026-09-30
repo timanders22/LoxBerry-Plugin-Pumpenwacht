@@ -6,9 +6,35 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.4 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.5 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.5
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an Attrappen
+für Shelly, Broker und SignalBot unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Reiter Test: „Letzter Alarm“** je Pumpe mit Art, Beginn und Ende bzw.
+  „dauert an“. Die Angabe übersteht ein Update.
+* **Neu, ab Werk aus: Alarm zusätzlich über SignalBot.** Beginn und Ende eines
+  Alarms gehen als Signal-Nachricht hinaus, höchstens einer je Pumpe und Art in
+  30 min; ein danach noch anstehender Alarm wird nachgemeldet. Empfänger ist eine
+  Rufnummer oder alle Freigegebenen, wahlweise „dringend“ – für die Sumpfpumpe
+  empfohlen, sonst hält SignalBot die Meldung in seiner Nachtruhe zurück. Fehlt
+  oder schweigt SignalBot, geht nach Loxone genau dasselbe hinaus; Protokoll und
+  Reiter Test sagen es.
+* **Ein Messwert mit einem Zeitstempel bis 5 s „in der Zukunft“ gilt als
+  frisch.** Springt die Uhr des LoxBerry kurz zurück (Zeitabgleich), meldete die
+  Pumpenwacht bisher für einen Aufruf „keine Meldung“ (`laeuft=-1`).
+* Endpunktparameter als Liste (`token[]`, `aktion[]`, `pumpe[]`, `watt[]`,
+  `an[]`) werden sauber mit 400/403 abgewiesen; unter PHP 8.5 kam bisher HTTP 200
+  mit PHP-Warnung und Serverpfad.
+* Nach einer Beanstandung stehen die eingetippten Werte wieder im Formular, das
+  Feld ist markiert; gespeichert wird nichts, das SignalBot-Token kommt nie
+  zurück. „Einstellungen sichern“ warnt, wenn die eigene Sicherung das
+  Zurückspielen nicht bestünde; mit SignalBot enthält die Sicherung dessen Token.
 
 ## Neu in 1.0.4
 
@@ -526,6 +552,34 @@ Dazu kommt eine Baustein-Liste zum 1:1-Nachbauen — Schwellwertschalter auf die
 Steckdose, Statusbaustein für den Befundtext, Benachrichtigung hinter einem
 ODER, Quittiertaster und ein Wächter auf den Lebenszeichen-Zähler.
 
+## Alarm zusätzlich über SignalBot (ab Werk aus)
+
+Neben Loxone lässt sich ein zweiter Meldeweg einschalten (Reiter
+*Einstellungen*, Abschnitt „Alarm zusätzlich über SignalBot“):
+
+* **Was gemeldet wird:** Beginnt bei einer Pumpe ein Alarm – ein Befund
+  ungleich „ok“ –, geht eine Signal-Nachricht hinaus, eine zweite, wenn er
+  endet. „keine Meldung“ (die Quelle schweigt) zählt erst, wenn schon einmal
+  ein Messwert kam. Die Texte kommen aus der Sprachdatei.
+* **Wie oft:** höchstens ein Alarm je Pumpe und Art in 30 Minuten. Steht ein
+  zurückgehaltener Alarm danach noch an, wird er nachgemeldet; endet er
+  vorher, entfällt er samt Ende.
+* **Quelle:** der Endpunkt des Plugins **SignalBot**
+  (`/plugins/<ordner>/index.php?aktion=senden`, Ordner ab Werk `signalbot`)
+  auf demselben LoxBerry, mit dem Aktionstoken von SignalBot, das Sie aus
+  dessen Oberfläche übernehmen. Nie über dessen Dateien. Empfänger ist eine
+  dort freigegebene Rufnummer oder – leer – alle freigegebenen; Gruppen kennt
+  der Endpunkt nicht. Wahlweise geht der Beginn als *dringend* hinaus (durch
+  die Nachtruhe von SignalBot, mit Wiederholung bis zur Quittung im Chat).
+* **Wenn SignalBot fehlt oder schweigt:** gesendet wird im Minutentakt,
+  *nach* dem Weg nach Loxone. Nach Loxone geht dann genau dasselbe hinaus wie
+  ohne die Einstellung; das Protokoll und der Reiter *Test* (Zeile „Kommt ein
+  Alarm auch über SignalBot an?“) sagen es.
+
+Der Reiter *Test* zeigt außerdem je Pumpe den **letzten Alarm** mit Beginn,
+Art und Ende. Er steht in `data/plugins/<ordner>/alarm.json` und übersteht
+ein Update wie Zähler und Tagesbilanz.
+
 ## Der Endpunkt
 
 Er liegt im unangemeldeten Bereich und ist deshalb durch ein Wortzeichen
@@ -610,6 +664,8 @@ config/plugins/<ordner>.backup.json        die Zweitschrift (0600)
 data/plugins/<ordner>/stand.json           der laufende Zustand
 data/plugins/<ordner>/tage.json            die Tagesbilanz, 60 Tage
 data/plugins/<ordner>/mqtt_praefixe.json   die je benutzten MQTT-Präfixe
+data/plugins/<ordner>/alarm.json           der letzte Alarm je Pumpe
+data/plugins/<ordner>/signal.json          was schon über SignalBot gemeldet ist
 data/plugins/<ordner>.upgrade_laeuft       nur während einer Aktualisierung
 data/plugins/<ordner>.bestand/             nur während einer Aktualisierung:
                                            Zustand und Tagesbilanz
@@ -626,7 +682,9 @@ Die Sicherungsdatei aus dem Reiter *Einstellungen* enthält dasselbe Token.
 Ohne es stünden nach dem Zurückspielen alle Felder richtig, und der
 Miniserver käme trotzdem nicht an das Plugin — deshalb ist es darin, und
 deshalb ist die Datei wie ein Kennwort zu behandeln. Ist sie einmal aus der
-Hand gegangen, entwertet der Knopf *Neues Aktionstoken erzeugen* sie.
+Hand gegangen, entwertet der Knopf *Neues Aktionstoken erzeugen* sie. Ist die
+Meldung über SignalBot eingerichtet, enthält die Datei auch dessen Token; das
+entwerten Sie in SignalBot.
 
 ## Fassung 0.9.12 — die Überschrift greift der Gateway-Fassung nicht mehr vor
 

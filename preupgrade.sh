@@ -135,7 +135,11 @@ if [ -d "$PDATA" ]; then
     N=0
     FEHL=""
     mkdir -p "$BESTAND.neu" 2>/dev/null
-    for f in stand.json tage.json mqtt_praefixe.json; do
+    # alarm.json (letzter Alarm) und signal.json (Merker der SignalBot-
+    # Meldungen) gehen seit dem Verbesserungsbau 30.09.2026 mit - der Reiter
+    # Test zeigt den letzten Alarm auch nach dem Update, und ein gemeldeter
+    # Alarm bekommt sein Ende (Entscheidung 13).
+    for f in stand.json tage.json mqtt_praefixe.json alarm.json signal.json; do
         [ -f "$PDATA/$f" ] || continue
         if cp "$PDATA/$f" "$BESTAND.neu/$f" 2>/dev/null && cmp -s "$PDATA/$f" "$BESTAND.neu/$f"; then
             N=$((N + 1))

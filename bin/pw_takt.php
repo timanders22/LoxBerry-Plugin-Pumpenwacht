@@ -250,6 +250,16 @@ foreach ($pw_ids as $pw_id) {
                      $pw_versucht, $pw_fehl), $pw_laut);
 }
 
+/* c1 (Verbesserungsbau 30.09.2026): Alarm zusaetzlich ueber SignalBot, ab
+ * Werk aus. ERST NACH dem MQTT-Weg aller Pumpen und ohne Einfluss auf den
+ * Rueckgabewert: fehlt SignalBot oder schweigt er, geht nach Loxone genau
+ * dasselbe hinaus wie ohne die Einstellung (pw_signal_takt()). Die Zeile im
+ * Reiter Test und das Protokoll sagen es. */
+list($pw_sg_n, $pw_sg_f) = pw_signal_takt($pw_voll, $pw_jetzt);
+if ($pw_sg_n > 0) {
+    pw_sagen(sprintf('SignalBot: %d Meldung(en) abgegeben, %d davon gescheitert.', $pw_sg_n, $pw_sg_f), $pw_laut);
+}
+
 if (count($pw_ids) > 1) {
     pw_sagen(sprintf('Takt ueber %d Pumpen: %d Nachrichten abgeschickt, %d gescheitert.',
                      count($pw_ids), $pw_versucht_ges, $pw_fehl_ges), $pw_laut);
