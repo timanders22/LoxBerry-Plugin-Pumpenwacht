@@ -6,9 +6,25 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.5 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.6 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.6
+
+Markierte Felder, Baustein-Liste in Hausform (Nachzug B: X-2, X-8).
+Gemessen am Prüfstand unter PHP 7.4 und 8.5
+(Windows, `php -S`, eine und zwei Pumpen, deutsch und englisch); nicht am Gerät.
+
+* **Beanstandete Felder sind auch für Vorleseprogramme markiert:** Nach einer Beanstandung trägt das betroffene
+  Feld – Textfeld, Auswahlfeld, Kennwortfeld, MQTT-Thema und Testwert – neben dem roten Rahmen
+  (`sm-beanstandet`) auch `aria-invalid="true"`.
+* **Baustein-Liste im Reiter „Einbindung in Loxone“ neu aufgebaut:** zuerst die gebrauchten virtuellen Eingänge
+  mit ihrem echten Namen für die gewählte Pumpe (z. B. `sumpf_sperre`), dann die Bausteine. Das *Nicht* vor der
+  Steckdose und das *Oder* vor der Benachrichtigung sind jetzt eigene Zeilen; keine Zeile verweist mehr auf eine
+  spätere. Die drei Befehle der Vorlage „Pumpenwächter (LoxBerry-Plugin)“ (Sperre quittieren, Messwert liefern,
+  Pumpe angefordert) stehen mit in der Liste. Die Nummern haben sich verschoben (Benachrichtigung jetzt #12).
+  **In Loxone:** nichts zu tun – eine schon gebaute Logik wirkt gleich.
 
 ## Neu in 1.0.5
 

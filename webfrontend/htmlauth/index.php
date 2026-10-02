@@ -145,7 +145,13 @@ function pw_fk($form, $k, $nur_klasse = false)
     $e = pw_eingabe($form);
     $ja = ($e !== null && isset($e['falsch']) && is_array($e['falsch']) && in_array($k, $e['falsch'], true));
     if ($nur_klasse) { return $ja ? ' sm-beanstandet' : ''; }
-    return $ja ? ' class="sm-beanstandet"' : '';
+    return $ja ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+/* X-2 (Nachzug G2, 02.10.2026): aria-invalid fuer Felder, deren Klasse mit
+ * pw_fk(..., true) IM class-Attribut steht (die Auswahlfelder). */
+function pw_fa($form, $k)
+{
+    return pw_fk($form, $k, true) !== '' ? ' aria-invalid="true"' : '';
 }
 
 /* ---------------- Konfiguration ---------------- */
@@ -1009,7 +1015,7 @@ if ($pw_felder['laeuft'] === -1) {
 </div>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('PUMPE.L_ART')) ?></label>
-  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'art', true) ?>" name="art">
+  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'art', true) ?>" name="art"<?= pw_fa('settings', 'art') ?>>
 <?php foreach (pw_arten() as $pw_ak => $pw_av): ?>
     <option value="<?= pw_e($pw_ak) ?>"<?= pw_fw('settings', 'art', pw_art($pw_cfg)) === $pw_ak ? ' selected' : '' ?>><?= pw_e(pw_t($pw_av['name'])) ?></option>
 <?php endforeach; ?>
@@ -1026,7 +1032,7 @@ if ($pw_felder['laeuft'] === -1) {
 <h2><?= pw_e(pw_t('EINST.H_MODELL')) ?></h2>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('EINST.L_MODELL')) ?></label>
-  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'modell', true) ?>" name="modell" id="pw_modell" onchange="pwModell()">
+  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'modell', true) ?>" name="modell"<?= pw_fa('settings', 'modell') ?> id="pw_modell" onchange="pwModell()">
 <?php foreach ($pw_modelle as $pw_mk => $pw_mv) { ?>
     <option value="<?= pw_e($pw_mk) ?>" data-p1="<?= (int) $pw_mv['p1'] ?>" data-starts="<?= (int) $pw_mv['starts_h'] ?>"<?= pw_fw('settings', 'modell', $pw_cfg['modell']) === $pw_mk ? ' selected' : '' ?>><?= pw_e(pw_t($pw_mv['name'])) ?></option>
 <?php } ?>
@@ -1038,7 +1044,7 @@ if ($pw_felder['laeuft'] === -1) {
 <div class="sm-hinweis"><?= pw_t('EINST.H_QUELLE_TEXT') ?></div>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('EINST.L_QUELLE')) ?></label>
-  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'quelle', true) ?>" name="quelle">
+  <select data-role="none" class="sm-auswahl<?= pw_fk('settings', 'quelle', true) ?>" name="quelle"<?= pw_fa('settings', 'quelle') ?>>
     <option value="loxone"<?= pw_fw('settings', 'quelle', $pw_cfg['quelle']) !== 'mqtt' ? ' selected' : '' ?>><?= pw_e(pw_t('EINST.Q_LOXONE')) ?></option>
     <option value="mqtt"<?= pw_fw('settings', 'quelle', $pw_cfg['quelle']) === 'mqtt' ? ' selected' : '' ?>><?= pw_e(pw_t('EINST.Q_MQTT')) ?></option>
   </select>
@@ -1354,23 +1360,23 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S7_TITEL') ?></b><br><br>
-<?= pw_t('LOX.S7_TEXT') ?>
+<?php /* Nachzug G2 (02.10.2026): die Liste kommt aus pw_bausteinliste() -
+   Nummern gerechnet, Eingangs- und Befehlsnamen aus der Vorlagenquelle.
+   Typ, Name, Parameter und Saetze stammen aus der Sprachdatei und duerfen
+   ihre Auszeichnung behalten; Namen sind dort schon maskiert. */
+$pw_bl = pw_bausteinliste($pw_cfg); ?>
+<?= $pw_bl['text'] ?>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:4%">#</th><th style="width:22%"><?= pw_t('LOX.BSP_TYP') ?></th><th style="width:20%"><?= pw_t('LOX.BSP_NAME') ?></th><th style="width:24%"><?= pw_t('LOX.BSP_PARAM') ?></th><th><?= pw_t('LOX.BSP_EIN') ?></th></tr>
-<tr><td>1</td><td><?= pw_t('LOX.B1_TYP') ?></td><td><?= pw_t('LOX.B1_NAME') ?></td><td><?= pw_t('LOX.B1_PARAM') ?></td><td><?= pw_t('LOX.B1_EIN') ?></td></tr>
-<tr><td>2</td><td><?= pw_t('LOX.B2_TYP') ?></td><td><?= pw_t('LOX.B2_NAME') ?></td><td><?= pw_t('LOX.B2_PARAM') ?></td><td><?= pw_t('LOX.B2_EIN') ?></td></tr>
-<tr><td>3</td><td><?= pw_t('LOX.B3_TYP') ?></td><td><?= pw_t('LOX.B3_NAME') ?></td><td><?= pw_t('LOX.B3_PARAM') ?></td><td><?= pw_t('LOX.B3_EIN') ?></td></tr>
-<tr><td>4</td><td><?= pw_t('LOX.B4_TYP') ?></td><td><?= pw_t('LOX.B4_NAME') ?></td><td><?= pw_t('LOX.B4_PARAM') ?></td><td><?= pw_t('LOX.B4_EIN') ?></td></tr>
-<tr><td>5</td><td><?= pw_t('LOX.B5_TYP') ?></td><td><?= pw_t('LOX.B5_NAME') ?></td><td><?= pw_t('LOX.B5_PARAM') ?></td><td><?= pw_t('LOX.B5_EIN') ?></td></tr>
-<tr><td>6</td><td><?= pw_t('LOX.B6_TYP') ?></td><td><?= pw_t('LOX.B6_NAME') ?></td><td><?= pw_t('LOX.B6_PARAM') ?></td><td><?= pw_t('LOX.B6_EIN') ?></td></tr>
-<tr><td>7</td><td><?= pw_t('LOX.B7_TYP') ?></td><td><?= pw_t('LOX.B7_NAME') ?></td><td><?= pw_t('LOX.B7_PARAM') ?></td><td><?= pw_t('LOX.B7_EIN') ?></td></tr>
+<?php foreach ($pw_bl['zeilen'] as $pw_bz) { ?>
+<tr><td><?= (int) $pw_bz[0] ?></td><td><?= $pw_bz[1] ?></td><td><?= $pw_bz[2] ?></td><td><?= $pw_bz[3] ?></td><td><?= $pw_bz[4] ?></td></tr>
+<?php } ?>
 </table>
 </div>
-<div class="sm-hilfe"><?= pw_t('LOX.BSP_ZU1') ?></div>
-<div class="sm-hilfe"><?= pw_t('LOX.BSP_ZU4') ?></div>
-<div class="sm-hilfe"><?= pw_t('LOX.BSP_ZU6') ?></div>
-<div class="sm-hilfe"><?= pw_t('LOX.BSP_ZU7') ?></div>
+<?php foreach ($pw_bl['zu'] as $pw_bh) { ?>
+<div class="sm-hilfe"><?= $pw_bh ?></div>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S8_TITEL') ?></b><br><br>
