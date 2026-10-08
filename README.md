@@ -6,9 +6,26 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.6 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.7 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.7
+
+Ansage bei Alarm über die gemeinsame Sprachausgabe (Sprachmodul 1.1.1), ab Werk aus.
+Gemessen am Prüfstand unter PHP 7.4 und 8.5 (Windows, `php -S`, Attrappen für Music Server, Alexa-NG und
+SignalBot); nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Neu: Ansage bei Alarm.** Beginnt bei einer Pumpe ein Alarm, sagt das Plugin ihn an – Loxone Music Server,
+  MusicServer4Home, eigene Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox NG). Satz:
+  „Pumpenwächter: ‹Alarmart› bei ‹Pumpe›.“
+* Jede Alarmart (Trockenlauf, Überlast, Dauerlauf, Schaltspiel, kein Anlauf, Quelle still, ruht) ist einzeln
+  abwählbar; höchstens eine Ansage je Pumpe und Art in 30 Minuten; nie Werte im Takt.
+* Läuft im Minutentakt nach dem Weg nach Loxone und nach SignalBot, unabhängig von beiden – scheitert die
+  Ansage, ändert sich an Loxone und SignalBot nichts.
+* Adresse und Vorlage müssen im Heimnetz liegen. Die Sprechtoken stehen nie in Seite, Protokoll oder
+  Sicherung; eine Sicherungsdatei mit Sprechtoken wird abgewiesen, das gespeicherte bleibt.
+* Testansage und Prüfzeile im Reiter Test. **In Loxone:** nichts zu tun.
 
 ## Neu in 1.0.6
 
@@ -595,6 +612,16 @@ Neben Loxone lässt sich ein zweiter Meldeweg einschalten (Reiter
 Der Reiter *Test* zeigt außerdem je Pumpe den **letzten Alarm** mit Beginn,
 Art und Ende. Er steht in `data/plugins/<ordner>/alarm.json` und übersteht
 ein Update wie Zähler und Tagesbilanz.
+
+## Ansage bei Alarm (ab Werk aus)
+
+- **Seit 1.0.7:** beginnt bei einer Pumpe ein Alarm, sagt das Plugin ihn
+  über die gemeinsame Sprachausgabe an (Loxone Music Server, MusicServer4Home, eigene Adressvorlage,
+  Alexa-NG oder Google-Lautsprecher über Chromecast 4 Lox NG). Je Alarmart abwählbar, höchstens einmal je
+  Pumpe und Art in 30 Minuten; nie Werte im Takt. Läuft neben Loxone und SignalBot, unabhängig von beiden.
+  Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner Sicherung.
+- Einstellungen im Reiter Einstellungen, Testansage und Prüfzeile im Reiter Test. In Loxone ist dafür
+  nichts anzulegen: die Ansage kommt aus dem Minutentakt des Plugins.
 
 ## Der Endpunkt
 

@@ -114,6 +114,14 @@ function pw_eingaben_sammeln($form, array $falsch, $pid)
     foreach (isset($haken[$form]) ? $haken[$form] : array() as $k) {
         $e['haken'][$k] = isset($_POST[$k]);
     }
+    if ($form === 'settings') {
+        /* Nr. 36 b: Felder und Anlaesse der Ansage - nie die Sprechtoken (ansage_x2_felder()). */
+        foreach (ansage_x2_felder(array('modi' => pw_ansage_modi())) as $k) {
+            if (substr($k, -9) === '_loeschen') { $e['haken'][$k] = isset($_POST[$k]); }
+            elseif (isset($_POST[$k])) { $e['werte'][$k] = $str($_POST[$k]); }
+        }
+        foreach (pw_ansage_anlaesse() as $k) { $e['haken'][$k] = isset($_POST[$k]); }
+    }
     return $e;
 }
 /* Beim GET: Wert, Haken und Markierung - nach einer Beanstandung aus den
@@ -516,6 +524,15 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
         $pw_beanstandet[] = pw_t('EINST.FEHLER_SIGNAL_TOKEN');
         $pw_falsch[] = 'signal_token';
     }
+    /* Nr. 36 b (Stufe 2): die Ansage. Jede Beanstandung verhindert das Speichern (Nr. 16); kein
+     * Sprechtoken steht in einer Meldung, ein leeres Tokenfeld heisst "behalten". */
+    $pw_tmangel = array();
+    $pw_tbean = array();
+    $pw_neu['tts'] = ansage_formular_lesen($_POST, pw_tts($pw_voll), $pw_tmangel, $pw_tbean,
+                                           array('modi' => pw_ansage_modi()), pw_ansage_k());
+    foreach ($pw_tmangel as $pw_tm) { $pw_beanstandet[] = pw_e($pw_tm['text']); }
+    foreach ($pw_tbean as $pw_tb) { $pw_falsch[] = $pw_tb; }
+    foreach (pw_ansage_anlaesse() as $pw_ak) { $pw_neu[$pw_ak] = isset($_POST[$pw_ak]) ? 1 : 0; }
     /* B4 (1.0.4): ein Quell-Filter, der die eigenen Themen trifft ('#',
      * '+/+', '<praefix>/#'), liesse den Zuhoerer sich selbst abhoeren. */
     if (!$pw_beanstandet) {
@@ -668,6 +685,20 @@ if ($pw_ist_post && isset($_POST['testwert'])) {
                 pw_e(pw_t(isset($pw_schl[$pw_bz]) ? $pw_schl[$pw_bz] : 'BEFUND.STILL')),
                 (int) $pw_v, (int) $pw_fl);
         }
+    }
+    $pw_tab = 'tab-test';
+}
+if ($pw_ist_post && isset($_POST['ansage_test'])) {
+    /* Nr. 36 b: die Testansage. Ins Protokoll nur die Kurzform ohne Text und Token. */
+    $pw_ak = pw_ansage_k();
+    $pw_ar = ansage_testansage(pw_tts(pw_config()), $pw_ak);
+    pw_log('Testansage: ' . ansage_kurz($pw_ar));
+    if ($pw_ar['stand'] === 1) {
+        $pw_meldungen[] = pw_e(pw_t('DURCHSAGE.M_TEST_OK'));
+    } elseif ($pw_ar['stand'] === -1) {
+        $pw_meldungen[] = sprintf(pw_e(pw_t('DURCHSAGE.M_TEST_NICHTS')), pw_e(ansage_kennung_text($pw_ar['kennung'], $pw_ak)));
+    } else {
+        $pw_fehler[] = sprintf(pw_e(pw_t('DURCHSAGE.M_TEST_FEHL')), pw_e(ansage_kennung_text($pw_ar['kennung'], $pw_ak)));
     }
     $pw_tab = 'tab-test';
 }
@@ -1155,6 +1186,26 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
   <div class="sm-hilfe"><?= pw_t('EINST.H_SIGNAL_DRINGEND') ?></div>
 </div>
 
+<?php /* Nr. 36 b (Stufe 2): Ansage bei Alarm ueber die gemeinsame Sprachausgabe, ab Werk aus. Die
+   Felder gelten fuer das ganze Plugin; der Satz nennt die Pumpe. */ ?>
+<h2><?= pw_e(pw_t('DURCHSAGE.H')) ?></h2>
+<div class="sm-hinweis"><?= pw_e(pw_t('DURCHSAGE.TEXT_HILFE')) ?></div>
+<div class="sm-feld">
+  <label><?= pw_e(pw_t('DURCHSAGE.L_ANLAESSE')) ?></label>
+<?php $pw_bs = pw_befund_schluessel(); foreach (pw_ansage_anlaesse() as $pw_ab => $pw_ak) { ?>
+  <label style="display:inline-flex;align-items:center;gap:8px;margin-right:14px;">
+    <input data-role="none" type="checkbox" name="<?= pw_e($pw_ak) ?>" value="1" <?= pw_fh('settings', $pw_ak, !empty($pw_cfg[$pw_ak])) ? 'checked' : '' ?>>
+    <?= pw_e(pw_t($pw_bs[pw_befund_zahl($pw_ab)])) ?>
+  </label>
+<?php } ?>
+  <div class="sm-hilfe"><?= pw_e(pw_t('DURCHSAGE.H_ANLAESSE')) ?></div>
+</div>
+<?= ansage_formular_html(pw_tts(pw_config()), array(
+    'w' => function ($n, $g) { return pw_fw('settings', $n, $g); },
+    'm' => function ($n) { return pw_fk('settings', $n); },
+    'c' => function ($n, $g) { return pw_fh('settings', $n, $g); },
+    'modi' => pw_ansage_modi()), pw_ansage_k()) ?>
+
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= pw_e(pw_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1584,6 +1635,11 @@ foreach ($pw_zeilen as $pw_zz) {
   <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="quittieren" value="1"><?= pw_t('TEST.K_QUITTIEREN') ?></button>
+</form>
+<form action="index.php" method="post" style="margin:0;">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= pw_e(pw_t('DURCHSAGE.K_TEST')) ?></button>
 </form>
 </div>
 <div class="sm-hilfe"><?= pw_t('TEST.HINWEIS') ?></div>

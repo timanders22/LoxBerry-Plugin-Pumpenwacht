@@ -260,6 +260,13 @@ if ($pw_sg_n > 0) {
     pw_sagen(sprintf('SignalBot: %d Meldung(en) abgegeben, %d davon gescheitert.', $pw_sg_n, $pw_sg_f), $pw_laut);
 }
 
+/* Nr. 36 b (Stufe 2): Ansage bei Alarm, ab Werk aus - NACH Loxone-Weg und SignalBot, ohne Einfluss
+ * auf den Rueckgabewert (pw_ansage_takt()). */
+list($pw_an_n, $pw_an_f) = pw_ansage_takt($pw_voll, $pw_jetzt);
+if ($pw_an_n > 0) {
+    pw_sagen(sprintf('Ansage: %d versucht, %d davon gescheitert.', $pw_an_n, $pw_an_f), $pw_laut);
+}
+
 if (count($pw_ids) > 1) {
     pw_sagen(sprintf('Takt ueber %d Pumpen: %d Nachrichten abgeschickt, %d gescheitert.',
                      count($pw_ids), $pw_versucht_ges, $pw_fehl_ges), $pw_laut);

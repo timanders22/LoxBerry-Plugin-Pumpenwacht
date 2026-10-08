@@ -10,6 +10,9 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/pw_regel.php';
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
+ * Liegt neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
 
 /**
  * Die laufende Fassung des Plugins - aus EINER Quelle.
@@ -229,6 +232,16 @@ function pw_grenzen()
         'signal_ordner'      => array('art' => 'text', 'muster' => '#^([a-z0-9][a-z0-9_\-]{0,39})?$#'),
         'signal_token'       => array('art' => 'text', 'muster' => '#^[A-Za-z0-9_.\-]{0,128}$#'),
         'signal_an'          => array('art' => 'text', 'muster' => '#^(\+[0-9]{6,20})?$#'),
+        /* Nr. 36 b (Stufe 2): Ansage bei Alarm - je Alarmart abwaehlbar. Der Block 'tts' steht
+         * NICHT hier: er ist ein Feld und wird mit den Regeln der gemeinsamen Sprachausgabe
+         * geprueft (pw_config_speichern(), pw_sicherung_lesen()). */
+        'ansage_trockenlauf'        => array('art' => 'haken'),
+        'ansage_ueberlast'          => array('art' => 'haken'),
+        'ansage_dauerlauf'          => array('art' => 'haken'),
+        'ansage_schaltspiel'        => array('art' => 'haken'),
+        'ansage_kein_anlauf'        => array('art' => 'haken'),
+        'ansage_still'              => array('art' => 'haken'),
+        'ansage_ruht'               => array('art' => 'haken'),
     );
 }
 
@@ -353,6 +366,16 @@ function pw_vorgaben()
         'signal_ordner'   => 'signalbot',
         'signal_token'    => '',
         'signal_an'       => '',
+        /* Nr. 36 b (Stufe 2): ab Werk keine Ausgabe ('aus'); die Anlaesse sind an, wirken aber erst
+         * mit einer Ausgabeart. */
+        'ansage_trockenlauf' => 1,
+        'ansage_ueberlast'   => 1,
+        'ansage_dauerlauf'   => 1,
+        'ansage_schaltspiel' => 1,
+        'ansage_kein_anlauf' => 1,
+        'ansage_still'       => 1,
+        'ansage_ruht'        => 1,
+        'tts'             => ansage_vorgaben('aus'),
     );
 }
 
@@ -376,7 +399,9 @@ function pw_global_schluessel()
     /* Die SignalBot-Kopplung (c1) gilt fuer das Plugin, nicht fuer eine
      * Pumpe: EIN Bot, EIN Empfaenger; die Nachricht nennt die Pumpe. */
     return array('aktionstoken', 'formgeheim', 'mqtt_ein',
-                 'signal_ein', 'signal_dringend', 'signal_ordner', 'signal_token', 'signal_an');
+                 'signal_ein', 'signal_dringend', 'signal_ordner', 'signal_token', 'signal_an',
+                 /* Nr. 36 b: die Ansage gilt fuer das Plugin; der Satz nennt die Pumpe. */
+                 'tts', 'ansage_trockenlauf', 'ansage_ueberlast', 'ansage_dauerlauf', 'ansage_schaltspiel', 'ansage_kein_anlauf', 'ansage_still', 'ansage_ruht');
 }
 
 /** Die Werksvorgaben EINER Pumpe. */
@@ -882,6 +907,14 @@ function pw_config_speichern($cfg)
      * die Pfade, und danach lief $p['config'] ins Leere - "Undefined array
      * key config", und gespeichert wurde nichts. */
     foreach ($cfg as $k => $v) {
+        if ($k === 'tts') {
+            /* Nr. 36 b: ein Feld aus Einzelwerten (ansage_wert_pruefen() prueft die Werte). */
+            if (!is_array($v)) { return false; }
+            foreach ($v as $tv) {
+                if (!pw_wert_taugt($tv)) { return false; }
+            }
+            continue;
+        }
         if ($k === 'pumpen') {
             if (!is_array($v)) { return false; }
             foreach ($v as $pumpe) {
@@ -2527,7 +2560,8 @@ function pw_sicherung_bauen($cfg = null)
         '_stand'   => date('Y-m-d H:i:s'),
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Pumpenwaechter. '
                     . 'Sie enthaelt das Aktionstoken und gegebenenfalls das Token fuer '
-                    . 'SignalBot - wie ein Kennwort behandeln.',
+                    . 'SignalBot - wie ein Kennwort behandeln. Die Sprechtoken der Sprachausgabe '
+                    . 'sind nie enthalten.',
     );
     $aus = array_merge($kopf, $cfg);
     /* O5 (1.0.4): das Geheimnis des Formularmerkmals gehoert NICHT hinein
@@ -2535,6 +2569,8 @@ function pw_sicherung_bauen($cfg = null)
      * Merkmal der Seite nachrechnen: ein POST "Neues Aktionstoken" nur mit
      * diesem Merkmal wirkte (Pruefbericht oberflaeche O5). */
     unset($aus['formgeheim']);
+    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung. */
+    if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }
     return $aus;
 }
 
@@ -2648,6 +2684,28 @@ function pw_sicherung_lesen($roh)
         if ($k === 'pumpen') { continue; }
         if (!array_key_exists($k, $vorg_global)) {
             $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
+            continue;
+        }
+        if ($k === 'tts') {
+            /* Nr. 36 b (Stufe 2): eine Sicherung dieses Plugins traegt nie ein Sprechtoken -
+             * traegt die Datei eines, wird sie abgewiesen. Die geltenden Sprechtoken bleiben;
+             * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft (Heimnetz). */
+            $tm = ansage_sicherung_mangel($w);
+            if ($tm) {
+                $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_TOKEN'), pw_e(implode(', ', $tm)));
+                continue;
+            }
+            $tg = '';
+            $tp = ansage_wert_pruefen($w, $tg, pw_ansage_modi());
+            if ($tp === null) {
+                $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_WERT'), pw_e(ansage_kennung_text($tg, pw_ansage_k())));
+                continue;
+            }
+            $tj = (isset($neu['tts']) && is_array($neu['tts'])) ? $neu['tts'] : array();
+            list($tv) = ansage_vervollstaendigen($tp + $tj);
+            $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
+            $gesehen[$k] = true;
+            $anzahl++;
             continue;
         }
         /* Ein LEERES Aktionstoken nimmt die Sicherung nicht an, wenn eines
@@ -3057,6 +3115,9 @@ function pw_selbstpruefung($cfg = null)
      * ueber Signal traegt nicht - der Weg nach Loxone ist davon unberuehrt. */
     list($pw_sok, $pw_stext) = pw_pruefe_signal($cfg);
     $add('PRUEF.SIGNAL', $pw_sok, $pw_stext);
+    /* Nr. 36 b: die Ansage bei Alarm (Ausgabeart, Erreichbarkeit, letzte Ansage). */
+    list($pw_aok, $pw_atext) = pw_pruefe_ansage($cfg);
+    $add('DURCHSAGE.PRUEF', $pw_aok, $pw_atext);
 
     /* --- Der Kern --- */
     list($kn, $kf) = pw_selbsttest(false);
@@ -4736,6 +4797,156 @@ function pw_alarm_merken($id, $neu, $jetzt)
         return false;
     }
     return true;
+}
+
+/* ==================================================================
+ * Nr. 36 b (Stufe 2, seit 1.0.7): Ansage bei Alarm ueber die gemeinsame Sprachausgabe
+ * ==================================================================
+ *
+ * Ab Werk aus (Ausgabeart 'aus'). Angesagt wird der BEGINN eines Alarms (Befund ungleich ok, wie
+ * bei SignalBot) - nie ein Wert im Takt. Je Alarmart abwaehlbar (ansage_<befund>), hoechstens eine
+ * Ansage je Pumpe und Art in 30 min (Wiederholsperre); eine gesperrte Ansage wird NICHT nachgeholt.
+ * Aus dem Minutentakt, NACH dem Weg nach Loxone und nach SignalBot; beide laufen unabhaengig davon.
+ * Ins Protokoll kommt nur das Ergebnis, nie der Text (Nr. 18).
+ */
+if (!defined('PW_ANSAGE_SPERRE_S')) { define('PW_ANSAGE_SPERRE_S', 1800); }
+
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg zu Loxone im Takt). */
+function pw_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Die Anlaesse: Befundkennung => Konfigurationsschluessel. */
+function pw_ansage_anlaesse()
+{
+    $a = array();
+    foreach (array(PW_TROCKEN, PW_UEBERLAST, PW_DAUERLAUF, PW_SCHALTSPIEL, PW_KEIN_ANLAUF, PW_STILL, PW_RUHT) as $b) {
+        $a[$b] = 'ansage_' . $b;
+    }
+    return $a;
+}
+
+/** Der Block tts, vervollstaendigt (ab Werk 'aus'). */
+function pw_tts($cfg = null)
+{
+    $cfg = $cfg === null ? pw_config() : $cfg;
+    list($t) = ansage_vervollstaendigen(isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array(), 'aus');
+    return $t;
+}
+
+/** Ist eine Ausgabeart gewaehlt? */
+function pw_ansage_an($cfg = null)
+{
+    $t = pw_tts($cfg);
+    return is_string($t['mode']) && $t['mode'] !== 'aus' && in_array($t['mode'], pw_ansage_modi(), true);
+}
+
+/** Der Kontext des Moduls: Webport, Kopfzeile, Datenordner, Texte. */
+function pw_ansage_k()
+{
+    $p = pw_paths();
+    return array(
+        'port'   => ansage_webport($p['general']),
+        'kopf'   => array('User-Agent: LoxBerry Pumpenwaechter'),
+        'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
+        't'      => function ($s) { return pw_t($s); },
+        /* Zu dieser Kennung hat das Modul (1.0.2) keinen Satz; linieneigen, bis der Modulschluessel
+         * mit Stufe 2 kommt (Entwurf, Stufe 2). */
+        'schluessel' => array('K_TTS_EINTRAG' => 'DURCHSAGE.SICH_EINTRAG'),
+    );
+}
+
+/** Der Satz der Ansage - aus der Sprachdatei, ohne Auszeichnung. */
+function pw_ansage_text($art, $pumpe)
+{
+    $sp = pw_signal_sprache();
+    $schl = pw_befund_schluessel();
+    $artname = pw_t_in($schl[pw_befund_zahl((string) $art)], $sp);
+    return trim(html_entity_decode(strip_tags(sprintf(pw_t_in('DURCHSAGE.TEXT', $sp), $artname, $pumpe)),
+                                   ENT_QUOTES, 'UTF-8'));
+}
+
+function pw_ansage_datei() { return pw_paths()['datadir'] . '/ansage.json'; }
+
+/**
+ * Aus dem Minutentakt. Rueckgabe array(versucht, gescheitert). Der Merker ansage.json haelt je Pumpe
+ * die Nummer des zuletzt behandelten Alarms und die Sperre je Pumpe und Art - nie Text oder Token.
+ */
+function pw_ansage_takt($voll, $jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $datei = pw_ansage_datei();
+    if (!pw_ansage_an($voll)) {
+        /* Aus: nichts sagen, nichts merken - sonst kaemen beim Einschalten alte Alarme. */
+        if (is_file($datei)) { @unlink($datei); }
+        return array(0, 0);
+    }
+    $fh = @fopen(pw_paths()['datadir'] . '/ansage.lock', 'c');
+    if (!$fh) { return array(0, 0); }
+    if (!@flock($fh, LOCK_EX | LOCK_NB)) { @fclose($fh); return array(0, 0); }
+    $n = 0;
+    $fehl = 0;
+    try {
+        $s = pw_json_lesen($datei);
+        $alt = (isset($s['pumpen']) && is_array($s['pumpen'])) ? $s['pumpen'] : array();
+        $sperre = (isset($s['sperre']) && is_array($s['sperre'])) ? $s['sperre'] : array();
+        $tts = pw_tts($voll);
+        $k = pw_ansage_k();
+        $anl = pw_ansage_anlaesse();
+        $pumpen = array();
+        foreach (pw_pumpe_ids($voll) as $id) {
+            $p = pw_pumpe($voll, $id);
+            $akt = pw_alarm_lesen($id)['aktuell'];
+            $gemerkt = isset($alt[$id]) ? (int) $alt[$id] : 0;
+            $pumpen[$id] = $gemerkt;
+            if ($akt === null || $akt['nr'] === $gemerkt || $akt['ende'] > 0) {
+                /* kein Alarm, schon behandelt, oder schon vorbei: nichts ansagen */
+                if ($akt !== null) { $pumpen[$id] = $akt['nr']; }
+                continue;
+            }
+            $pumpen[$id] = $akt['nr'];
+            $art = $akt['art'];
+            if (!isset($anl[$art]) || empty($voll[$anl[$art]])) { continue; }    // abgewaehlt
+            $schl = $id . '|' . $art;
+            $zuletzt = isset($sperre[$schl]) ? (int) $sperre[$schl] : 0;
+            if ($zuletzt > 0 && ($jetzt - $zuletzt) < PW_ANSAGE_SPERRE_S && ($jetzt - $zuletzt) >= -300) {
+                pw_log('Ansage: Alarm ' . $art . ' (' . $id . ') innerhalb von 30 min nach der letzten Ansage '
+                       . 'dieser Art - nicht angesagt (Wiederholsperre).');
+                continue;
+            }
+            $sperre[$schl] = $jetzt;
+            $r = ansage_sprechen(pw_ansage_text($art, pw_pumpe_name($p)), $tts, $k);
+            $n++;
+            if ($r['stand'] === 1) {
+                pw_log('Ansage: Alarm ' . $art . ' (' . $id . ') angesagt (' . ansage_kurz($r) . ').');
+            } else {
+                $fehl++;
+                pw_log('Ansage: Alarm ' . $art . ' (' . $id . ') nicht angesagt: '
+                       . ansage_kennung_text($r['kennung'], $k)
+                       . '. Der Weg nach Loxone und SignalBot sind davon nicht betroffen; es wird nicht wiederholt.');
+            }
+        }
+        foreach ($sperre as $kk => $t) {
+            if (!is_string($kk) || ($jetzt - (int) $t) > 86400 || ($jetzt - (int) $t) < -86400) { unset($sperre[$kk]); }
+        }
+        if (!pw_json_schreiben($datei, array('pumpen' => $pumpen, 'sperre' => $sperre), 0600)) {
+            pw_log('WARNUNG: Der Merker fuer die Ansage liess sich nicht schreiben (' . $datei . ').');
+        }
+    } finally {
+        @flock($fh, LOCK_UN);
+        @fclose($fh);
+    }
+    return array($n, $fehl);
+}
+
+/** Die Zeile im Reiter Test: 1 Haken, 0 Kreuz, 2 Strich (aus). */
+function pw_pruefe_ansage($cfg)
+{
+    $k = pw_ansage_k();
+    $k['e'] = function ($s) { return (string) $s; };      // die Tabelle maskiert selbst
+    list($st, $text) = ansage_pruefzeile(pw_tts($cfg), true, $k);
+    return array($st === 1 ? 1 : ($st === -2 ? 2 : 0), $text);
 }
 
 /* ==================================================================
