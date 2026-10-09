@@ -937,6 +937,10 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL') . ' ' . pw_fassung(), 'https
 /* Ergaenzung (Verbesserungsbau 30.09.2026, nicht aus der Vorlage): X-2 markiert
    ein beanstandetes Feld. */
 .sm-wrap input.sm-beanstandet, .sm-wrap select.sm-beanstandet { border: 2px solid #b00000 !important; background: #fff5f4 !important; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 </style>
 <div class="sm-wrap">
 <h1 style="font-size:1.4em;margin:10px 0 0;"><?= pw_e(pw_t('ALLG.TITEL')) ?> <span style="font-size:0.62em;color:#777;font-weight:400;"><?= pw_e(pw_fassung()) ?></span></h1>
@@ -1430,6 +1434,11 @@ $pw_bl = pw_bausteinliste($pw_cfg); ?>
 <?php foreach ($pw_bl['zu'] as $pw_bh) { ?>
 <div class="sm-hilfe"><?= $pw_bh ?></div>
 <?php } ?>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= pw_e(pw_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= pw_e(pw_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?= pw_t('LOX.MUSTERPROJEKT') ?></div>
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S8_TITEL') ?></b><br><br>

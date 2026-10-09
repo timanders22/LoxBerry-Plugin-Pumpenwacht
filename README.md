@@ -6,9 +6,20 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.9 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.10 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.10
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei.
+
+* Unter der Baustein-Liste (Schritt 7) steht das Bild der Seite „Pumpenwacht“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+* Baustein-Liste unverändert.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.0.9
 
@@ -612,6 +623,10 @@ Beide Vorlagen entstehen auf Knopfdruck, mit eingesetztem Wortzeichen.
 Dazu kommt eine Baustein-Liste zum 1:1-Nachbauen — Schwellwertschalter auf die
 Steckdose, Statusbaustein für den Befundtext, Benachrichtigung hinter einem
 ODER, Quittiertaster und ein Wächter auf den Lebenszeichen-Zähler.
+
+Fertig verbunden stehen diese Bausteine auf der Seite „Pumpenwacht“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ## Alarm zusätzlich über SignalBot (ab Werk aus)
 
