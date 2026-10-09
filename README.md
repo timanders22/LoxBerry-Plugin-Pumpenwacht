@@ -6,9 +6,28 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.8 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.9 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.9
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Quellen in fester Form: `V = Ausgang von pumpe_sperre (#1)` statt „V: #1 pumpe_sperre“, `I = #6`,
+  `I1 = …, I2 = Ausgang E von #10` statt „Eingang 1: …, Eingang 2: …“. Die erklärenden Sätze, die in
+  der Zelle standen (das NICHT vor der Steckdose, Ausgang E als Ausfallmeldung, nur ein Eingang an der
+  Benachrichtigung), stehen jetzt in der Spalte Parameter. An der Analogwertvalidierung (#10) steht
+  jetzt `V = …, En = Konstante 1`: in Loxone Config prüft der Baustein erst mit einer Konstante 1 an
+  En (Gegenprobe am Miniserver, 08.10.2026); die Erläuterung darunter nennt die Anschlüsse. Was aus der
+  eigenen Anlage kommt
+  (Leistungsmesswert, Anforderung der Pumpe), bleibt in Worten. Gleiche Bausteine, gleiche Verbindungen.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Den Satz zu einem
+  unbekannten Eintrag im Block der Sprachausgabe bringt jetzt das Modul mit; die eigene Umlenkung ist
+  gestrichen (gleicher Wortlaut). Dazu aus dem Modul: Zeichenzahl bei kaputtem UTF-8 in Zeichen, die
+  Meldung „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.0.8
 

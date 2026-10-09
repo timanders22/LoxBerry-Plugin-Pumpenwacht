@@ -2354,6 +2354,11 @@ function pw_vorlage_vo($cfg = null, $host = null)
  * Steuerbefehle werden aus pw_vorlage_vo() GELESEN. Regel A4 (Regeln/04):
  * ein ODER hat zwei Eingaenge, jede Zeile verweist nur auf kleinere Nummern.
  *
+ * X-10 (1.0.9): die Spalte "Eingaenge verbinden mit" in der Schreibweise von
+ * Werkzeuge/leitungen_setzen.py 1.1 - "V = Ausgang von pumpe_sperre (#1)", "I = #6",
+ * "I1 = ..., I2 = Ausgang E von #10", Bemerkungen als "— (...)". Saetze, die bis 1.0.8
+ * in der Zelle standen, stehen jetzt in der Spalte Parameter (#8, #10, #12).
+ *
  * $cfg ist die flache Sicht der gewaehlten Pumpe. Rueckgabe: 'zeilen'
  * (Nummer, Typ, Name, Parameter, Eingaenge - fertiges HTML: Texte aus der
  * Sprachdatei, Namen maskiert), 'zu' (Erlaeuterungen), 'text' (Einleitung).
@@ -2392,6 +2397,9 @@ function pw_bausteinliste($cfg)
     };
     $r = function ($k) use (&$nr) { return '#' . $nr[$k]; };
     $rf = function ($feld) use (&$nr, $vi) { return '#' . $nr['f_' . $feld] . ' ' . $vi($feld); };
+    $ra = function ($feld) use (&$nr, $vi) {
+        return sprintf(pw_t('LOX.BS_AUSGANG_VON'), $vi($feld), '#' . $nr['f_' . $feld]);
+    };
     $opt = function ($s) { return sprintf(pw_t('LOX.BS_OPTIONAL'), $s); };
 
     foreach (array('sperre', 'befund', 'status_zaehler', 'lauf_s_tag', 'starts_tag') as $f) {
@@ -2399,18 +2407,18 @@ function pw_bausteinliste($cfg)
              isset($felder[$f]) ? pw_t($felder[$f]['bed']) : '?', pw_t('LOX.BS_E_VORLAGE'));
     }
     $neu('schwell', $opt(pw_t('LOX.B1_TYP')), pw_t('LOX.B1_NAME'), pw_t('LOX.B1_PARAM'),
-         sprintf(pw_t('LOX.BS_E_V'), $rf('sperre')));
+         sprintf(pw_t('LOX.BS_E_V'), $ra('sperre')));
     $neu('nicht', $opt(pw_t('LOX.BS_T_NICHT')), pw_t('LOX.BS_N_NICHT'), pw_t('LOX.BS_P_KEINE'),
          sprintf(pw_t('LOX.BS_E_I'), $r('schwell')));
-    $neu('aktor', $opt(pw_t('LOX.B2_TYP')), pw_t('LOX.B2_NAME'), pw_t('LOX.BS_P_KEINE'),
-         sprintf(pw_t('LOX.BS_E_AKTOR'), $r('nicht'), $r('schwell')));
+    $neu('aktor', $opt(pw_t('LOX.B2_TYP')), pw_t('LOX.B2_NAME'), sprintf(pw_t('LOX.BS_P_AKTOR'), $r('schwell')),
+         sprintf(pw_t('LOX.BS_E_AKTOR'), $r('nicht')));
     $neu('status', pw_t('LOX.B3_TYP'), pw_t('LOX.B3_NAME'), pw_t('LOX.B3_PARAM'),
-         sprintf(pw_t('LOX.BS_E_I1'), $rf('befund')));
+         sprintf(pw_t('LOX.BS_E_I1'), $ra('befund')));
     $neu('valid', pw_t('LOX.B6_TYP'), pw_t('LOX.B6_NAME'), pw_t('LOX.B6_PARAM'),
-         sprintf(pw_t('LOX.BS_E_VALID'), $rf('status_zaehler')));
+         sprintf(pw_t('LOX.BS_E_VALID'), $ra('status_zaehler')));
     $neu('oder', pw_t('LOX.BS_T_ODER'), pw_t('LOX.BS_N_ODER'), pw_t('LOX.BS_P_KEINE'),
-         sprintf(pw_t('LOX.BS_E_ODER'), $rf('sperre'), $r('valid')));
-    $neu('benachr', pw_t('LOX.B4_TYP'), pw_t('LOX.B4_NAME'), sprintf(pw_t('LOX.B4_PARAM'), $r('status')),
+         sprintf(pw_t('LOX.BS_E_ODER'), $ra('sperre'), $r('valid')));
+    $neu('benachr', pw_t('LOX.B4_TYP'), pw_t('LOX.B4_NAME'), sprintf(pw_t('LOX.B4_PARAM'), $r('status'), $r('oder')),
          sprintf(pw_t('LOX.BS_E_NUR'), $r('oder')));
     $neu('taster', $opt(pw_t('LOX.B5_TYP')), pw_t('LOX.B5_NAME'), pw_t('LOX.B5_PARAM'), pw_t('LOX.BS_E_TASTER'));
     $neu('vo_quitt', $opt(pw_t('LOX.BS_T_VO')), $vt(1), pw_t('LOX.BS_P_VO_QUITT'),
@@ -4851,9 +4859,8 @@ function pw_ansage_k()
         'kopf'   => array('User-Agent: LoxBerry Pumpenwaechter'),
         'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
         't'      => function ($s) { return pw_t($s); },
-        /* Zu dieser Kennung hat das Modul (1.0.2) keinen Satz; linieneigen, bis der Modulschluessel
-         * mit Stufe 2 kommt (Entwurf, Stufe 2). */
-        'schluessel' => array('K_TTS_EINTRAG' => 'DURCHSAGE.SICH_EINTRAG'),
+        /* K_TTS_EINTRAG: den Satz bringt das Modul seit 1.1.2 selbst mit; die Umlenkung auf
+         * DURCHSAGE.SICH_EINTRAG ist seit 1.0.9 gestrichen (X-10). Ab Werk aus - kein 'werk'. */
     );
 }
 
