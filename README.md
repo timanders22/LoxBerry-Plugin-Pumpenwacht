@@ -6,9 +6,15 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.10 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.11 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.11
+
+Einbindung in Loxone: Eingang En der Analogwertvalidierung nicht negieren (Hinweis und Bild);
+ohne diese Korrektur löste die Ausfallmeldung nie aus. Wer die Seite schon gebaut hat: Haken bei
+‚En‘ entfernen.
 
 ## Neu in 1.0.10
 
