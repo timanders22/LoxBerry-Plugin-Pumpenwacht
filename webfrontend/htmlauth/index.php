@@ -941,6 +941,11 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL') . ' ' . pw_fassung(), 'https
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 15 (1.0.12): Abschnitte, Schritte und Hinweise je Baustein-Liste. */
+.sm-step h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 </style>
 <div class="sm-wrap">
 <h1 style="font-size:1.4em;margin:10px 0 0;"><?= pw_e(pw_t('ALLG.TITEL')) ?> <span style="font-size:0.62em;color:#777;font-weight:400;"><?= pw_e(pw_fassung()) ?></span></h1>
@@ -1417,28 +1422,46 @@ foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S7_TITEL') ?></b><br><br>
-<?php /* Nachzug G2 (02.10.2026): die Liste kommt aus pw_bausteinliste() -
-   Nummern gerechnet, Eingangs- und Befehlsnamen aus der Vorlagenquelle.
-   Typ, Name, Parameter und Saetze stammen aus der Sprachdatei und duerfen
-   ihre Auszeichnung behalten; Namen sind dort schon maskiert. */
+<?php /* Welle Bild 15 (1.0.12, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum
+   leicht uebernehmen koennen; Entwurf Welle 15 pw, Entscheidungen 1-13 wie empfohlen, 17.10.2026): zwei
+   Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py
+   verbunden. Je Seite: Ueberschrift (= Seitenname), Kasten "So uebernehmen Sie diese Seite", Tabelle,
+   Hinweise, Bild, Link - alle immer sichtbar. Bis 1.0.11 stand hier eine Liste mit 17 Zeilen (Nummern beim
+   Einfuegen gerechnet) und ein Bild. Zeilen, Schritte und Hinweise kommen aus pw_bausteinliste() als reiner
+   Text und werden hier maskiert; Einleitung und Erlaeuterungen (BSP_ZU*) sind HTML aus der Sprachdatei. */
 $pw_bl = pw_bausteinliste($pw_cfg); ?>
 <?= $pw_bl['text'] ?>
+<?php foreach ($pw_bl['seiten'] as $pw_bs) { ?>
+<h4 class="sm-h4"><?= pw_e($pw_bs['seite']) ?></h4>
+<div class="sm-hinweis"><b><?= pw_e(pw_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($pw_bs['schritte'] as $pw_bx) { ?>
+<li><?= pw_e($pw_bx) ?></li>
+<?php } ?>
+</ol></div>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:4%">#</th><th style="width:22%"><?= pw_t('LOX.BSP_TYP') ?></th><th style="width:20%"><?= pw_t('LOX.BSP_NAME') ?></th><th style="width:24%"><?= pw_t('LOX.BSP_PARAM') ?></th><th><?= pw_t('LOX.BSP_EIN') ?></th></tr>
-<?php foreach ($pw_bl['zeilen'] as $pw_bz) { ?>
-<tr><td><?= (int) $pw_bz[0] ?></td><td><?= $pw_bz[1] ?></td><td><?= $pw_bz[2] ?></td><td><?= $pw_bz[3] ?></td><td><?= $pw_bz[4] ?></td></tr>
+<?php foreach ($pw_bs['zeilen'] as $pw_bz) { ?>
+<tr><td><?= (int) $pw_bz[0] ?></td><td><?= pw_e($pw_bz[1]) ?></td><td class="sm-mono"><?= pw_e($pw_bz[2]) ?></td><td><?= pw_e($pw_bz[3]) ?></td><td class="sm-mono"><?= pw_e($pw_bz[4]) ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<?php foreach ($pw_bl['zu'] as $pw_bh) { ?>
+<div class="sm-warnung"><b><?= pw_e(pw_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($pw_bs['hinweise'] as $pw_bx) { ?>
+<li><?= pw_e($pw_bx) ?></li>
+<?php } ?>
+</ul></div>
+<?php foreach ($pw_bs['zu'] as $pw_bh) { ?>
 <div class="sm-hilfe"><?= $pw_bh ?></div>
 <?php } ?>
 <figure class="sm-bild">
-<img src="einbindung_loxone.png" alt="<?= pw_e(pw_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= pw_e(pw_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+<img src="<?= pw_e($pw_bs['bild']) ?>" alt="<?= pw_e(sprintf(pw_t('LOX.BILD_ALT'), $pw_bs['seite'])) ?>" loading="lazy">
+<figcaption><?= pw_e(sprintf(pw_t('LOX.BILD_UNTERSCHRIFT'), $pw_bs['seite'])) ?></figcaption>
 </figure>
 <div class="sm-hilfe"><?= pw_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S8_TITEL') ?></b><br><br>

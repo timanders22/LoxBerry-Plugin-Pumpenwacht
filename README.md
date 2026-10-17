@@ -6,9 +6,35 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.11 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.12 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.12
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) mit zwei Bildern und
+Schritt-für-Schritt-Anleitung.
+
+* **Reiter Einbindung in Loxone, Schritt 7:** zwei Baustein-Listen statt einer (53 statt 17 Zeilen) –
+  „Pumpenwacht“ (Wächter, Sperre, Meldung bei jedem Befund – auch „seit langem kein Lauf“ einer
+  Entwässerungspumpe –, Sperrstatus mit Grund, Quittiertaste, Anforderung und der Messwert aus Loxone mit
+  Sendetakt) und „Pumpenwacht Betrieb“ (Lauf, Tagesbilanz, Betriebsstunden, Netz und Zähler,
+  Unterspannungsmeldung) –, je mit Kasten „So übernehmen Sie diese Seite“, Hinweisen und dem Bild der Seite
+  aus dem Musterprojekt. Die Nummern der Plugin-Liste sind jetzt dieselben wie im Musterprojekt; die
+  Konstante 1 an der Analogwertvalidierung ist eine eigene Zeile (#18, „En = #18“).
+* **Sendetakt für den Messwert aus Loxone:** Der Virtuelle Ausgang sendet nur bei Änderung und wiederholt
+  den Wert 0 nie; nach 180 s ohne Messwert meldet das Plugin „keine Meldung“. Impulsgeber 30/30 s und
+  Formel I1+I2/100 (Zeilen #15/#16) halten den Wert frisch, auch bei stehender Pumpe. Schritt 1 sagt das
+  jetzt; bisher hieß es, der Minutentakt schreibe den Zustand ohnehin fort.
+* **Vorlagen:** Die Kommentare der drei Vorlagen (Eingänge MQTT, Eingänge HTTP, Steuerbefehle) kommen aus
+  der Sprachdatei; auf Englisch sind sie englisch, die Titel bleiben deutsch. Deutsch ändert sich nichts,
+  ein neuer Import ist nicht nötig.
+* **Textberichtigungen:** Schritt 6 nannte die Ausfallerkennung „Baustein #6“ (jetzt #10) und behauptete,
+  das Plugin veröffentliche ohne Retain (seit 1.0.4 sind laeuft, befund, sperre, sperrgrund, quittung und
+  quelle_online retained); der Befund-Status kennt jetzt auch 7 = seit langem kein Lauf; die
+  Benachrichtigung trägt einen festen Text statt „Text aus #9“; die Statistik ist keine eigene Zeile mehr,
+  sondern ein Haken im Eigenschaftsfenster.
+* Kein Verhalten des Plugins geändert. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.0.11
 
@@ -626,11 +652,15 @@ einen; der Reiter *Einbindung in Loxone* führt durch beide.
   gibt es eine eigene Vorlage.
 
 Beide Vorlagen entstehen auf Knopfdruck, mit eingesetztem Wortzeichen.
-Dazu kommt eine Baustein-Liste zum 1:1-Nachbauen — Schwellwertschalter auf die
-Steckdose, Statusbaustein für den Befundtext, Benachrichtigung hinter einem
-ODER, Quittiertaster und ein Wächter auf den Lebenszeichen-Zähler.
+Dazu kommen zwei Baustein-Listen zum 1:1-Nachbauen. „Pumpenwacht“: Schwellwertschalter
+mit Verzögerung auf die Steckdose, Status für Befund und Sperre, eine Benachrichtigung
+hinter zwei ODER für Sperre, jeden Befund und Ausfall, Quittiertaste, Anforderung, ein
+Wächter auf den Lebenszeichen-Zähler und der Messwert aus Loxone mit Sendetakt.
+„Pumpenwacht Betrieb“: Lauf, Tagesbilanz, Netz und Zähler als drei Status und eine
+Unterspannungsmeldung.
 
-Fertig verbunden stehen diese Bausteine auf der Seite „Pumpenwacht“ im
+Fertig verbunden stehen diese Bausteine auf den Seiten „Pumpenwacht“ und
+„Pumpenwacht Betrieb“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 

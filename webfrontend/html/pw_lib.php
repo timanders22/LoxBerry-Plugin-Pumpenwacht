@@ -2243,7 +2243,9 @@ function pw_vorlage_vi($cfg = null, $texte = null)
     foreach ($pumpen as $p) { $themen[] = pw_mqtt_thema($p) . '/#'; }
     $crlf = "\r\n";
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp HintText="" Title="Pumpenwächter" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Werte kommen vom MQTT-Gateway - Abo ' . pw_x(implode(' ', $themen)) . ' nötig." Address="http://localhost" PollingTime="604800">' . $crlf;
+    /* Welle Bild 15 (1.0.12, Sprachregel 13.10.2026): der Kommentar kommt aus der Sprachdatei (LOX.VK_VI),
+     * der Titel bleibt fest deutsch. Deutsch wortgleich mit dem bisherigen festen Text. */
+    $o .= '<VirtualInHttp HintText="" Title="Pumpenwächter" Comment="' . pw_x(sprintf(pw_t('LOX.VK_VI'), date('d.m.Y'), implode(' ', $themen))) . '" Address="http://localhost" PollingTime="604800">' . $crlf;
     $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($pumpen as $p) {
         $topic = pw_mqtt_thema($p);
@@ -2295,7 +2297,8 @@ function pw_vorlage_vi_http($cfg = null, $host = null, $texte = null)
     $name = 'VI_pumpenwaechter_http' . ($mehrere && $id !== '' ? '_' . $id : '') . '.xml';
     $crlf = "\r\n";
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp HintText="" Title="' . pw_x($titel) . '" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Fragt den Endpunkt selbst ab - ohne MQTT-Gateway. Bitte Adresse prüfen." Address="' . pw_x($adr) . '" PollingTime="30">' . $crlf;
+    /* Welle Bild 15 (1.0.12): Kommentar aus der Sprachdatei (LOX.VK_VIHTTP), Titel fest. */
+    $o .= '<VirtualInHttp HintText="" Title="' . pw_x($titel) . '" Comment="' . pw_x(sprintf(pw_t('LOX.VK_VIHTTP'), date('d.m.Y'))) . '" Address="' . pw_x($adr) . '" PollingTime="30">' . $crlf;
     $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach (array_merge(pw_felderliste(), pw_statusliste()) as $k => $r) {
         $o .= pw_vi_zeile($vor . $k, pw_kurz($k, $texte), $r, pw_check($k));
@@ -2322,20 +2325,22 @@ function pw_vorlage_vo($cfg = null, $host = null)
     $crlf = "\r\n";
     $skala = 'SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" ';
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualOut HintText="" Title="Pumpenwächter (LoxBerry-Plugin)" Comment="Erzeugt vom LoxBerry-Plugin Pumpenwächter (' . date('d.m.Y') . '). Bitte Adresse prüfen. Der Befehl „Pumpe angefordert“ wird nur gebraucht, wenn Loxone die Pumpe schaltet - bei einer druckgesteuerten Pumpe bleibt er ungenutzt." Address="http://' . pw_x(pw_host($host)) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    /* Welle Bild 15 (1.0.12, Sprachregel): die Kommentare der Wurzel und der drei Befehle kommen aus der
+     * Sprachdatei (LOX.VK_VO, VK_VO_WATT, VK_VO_QUITT, VK_VO_ANF); Titel und Befehle bleiben fest. */
+    $o .= '<VirtualOut HintText="" Title="Pumpenwächter (LoxBerry-Plugin)" Comment="' . pw_x(sprintf(pw_t('LOX.VK_VO'), date('d.m.Y'))) . '" Address="http://' . pw_x(pw_host($host)) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($pumpen as $p) {
         $basis = substr(pw_endpunkt($p, $host), strlen('http://' . pw_host($host)));
         /* Bei einer Pumpe bleiben die Befehlsnamen genau die von 0.9.14 -
          * ein Zusatz erscheint erst, wenn es etwas zu unterscheiden gibt. */
         $zusatz = count($pumpen) > 1 ? ' - ' . pw_pumpe_name($p) : '';
-        $o .= "\t" . '<VirtualOutCmd Title="Messwert liefern (Watt)' . pw_x($zusatz) . '" Comment="Messwert anliefern (Watt)' . pw_x($zusatz) . '" ';
+        $o .= "\t" . '<VirtualOutCmd Title="Messwert liefern (Watt)' . pw_x($zusatz) . '" Comment="' . pw_x(pw_t('LOX.VK_VO_WATT') . $zusatz) . '" ';
         $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=wert&watt=<v>') . '" CmdOnHTTP="" CmdOnPost="" ';
         $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="true" Repeat="0" RepeatRate="0" ' . $skala . 'HintText=""/>' . $crlf;
-        $o .= "\t" . '<VirtualOutCmd Title="Sperre quittieren' . pw_x($zusatz) . '" Comment="Sperre quittieren' . pw_x($zusatz) . '" ';
+        $o .= "\t" . '<VirtualOutCmd Title="Sperre quittieren' . pw_x($zusatz) . '" Comment="' . pw_x(pw_t('LOX.VK_VO_QUITT') . $zusatz) . '" ';
         $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=quittieren') . '" CmdOnHTTP="" CmdOnPost="" ';
         $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
-        $o .= "\t" . '<VirtualOutCmd Title="Pumpe angefordert' . pw_x($zusatz) . '" Comment="Pumpe angefordert (Ein/Aus)' . pw_x($zusatz) . '" ';
+        $o .= "\t" . '<VirtualOutCmd Title="Pumpe angefordert' . pw_x($zusatz) . '" Comment="' . pw_x(pw_t('LOX.VK_VO_ANF') . $zusatz) . '" ';
         $o .= 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . pw_x($basis . '&aktion=anforderung&an=1') . '" CmdOnHTTP="" CmdOnPost="" ';
         $o .= 'CmdOff="' . pw_x($basis . '&aktion=anforderung&an=0') . '" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
     }
@@ -2346,30 +2351,30 @@ function pw_vorlage_vo($cfg = null, $host = null)
 /* ---------------- Baustein-Liste (Reiter Einbindung in Loxone) ---------------- */
 
 /**
- * Die Baustein-Liste (Nachzug G2, 02.10.2026; bis 1.0.6 sieben Zeilen von Hand
- * in index.php mit einem Vorwaertsverweis und ODER/NICHT nur im Text).
+ * Die Baustein-Listen (Welle Bild 15, 1.0.12): ZWEI Seiten wie im LoxBerry-Plugins Musterprojekt,
+ * "Pumpenwacht" (28 Zeilen: Waechter, Sperre, Meldung, Messwert aus Loxone mit Sendetakt) und
+ * "Pumpenwacht Betrieb" (25 Zeilen: Lauf, Tagesbilanz, Netz und Zaehler). Deutsch wortgleich mit
+ * Musterprojekt/baustein_listen.txt (Stand 17.10.2026); Plugin-Liste und Musterliste tragen DIESELBEN
+ * Nummern (Entwurf Welle 15 pw, Entscheidung 2) - bis 1.0.11 rechnete diese Funktion die Nummern beim
+ * Einfuegen, und 7 der 17 Zeilen hatten im Musterprojekt keine Entsprechung.
  *
- * Nummern und Verweise werden GERECHNET. Die Namen der Eingaenge kommen aus
- * pw_eingangsname() - derselben Quelle wie pw_vorlage_vi() -, die Titel der
- * Steuerbefehle werden aus pw_vorlage_vo() GELESEN. Regel A4 (Regeln/04):
- * ein ODER hat zwei Eingaenge, jede Zeile verweist nur auf kleinere Nummern.
+ * Die Namen der Eingaenge kommen weiter aus pw_eingangsname() - derselben Quelle wie pw_vorlage_vi() -,
+ * die Titel der Steuerbefehle werden weiter aus pw_vorlage_vo() GELESEN. Die Spalte "Eingaenge verbinden
+ * mit" steht in der Schreibweise von Werkzeuge/leitungen_setzen.py ("Eingang = Ausgang von pumpe_sperre
+ * (#1)", "I1 = #11, I2 = #25", "En = #18"). Ein ODER/UND hat zwei Eingaenge (Regeln/09).
  *
- * X-10 (1.0.9): die Spalte "Eingaenge verbinden mit" in der Schreibweise von
- * Werkzeuge/leitungen_setzen.py 1.1 - "V = Ausgang von pumpe_sperre (#1)", "I = #6",
- * "I1 = ..., I2 = Ausgang E von #10", Bemerkungen als "— (...)". Saetze, die bis 1.0.8
- * in der Zelle standen, stehen jetzt in der Spalte Parameter (#8, #10, #12).
- *
- * $cfg ist die flache Sicht der gewaehlten Pumpe. Rueckgabe: 'zeilen'
- * (Nummer, Typ, Name, Parameter, Eingaenge - fertiges HTML: Texte aus der
- * Sprachdatei, Namen maskiert), 'zu' (Erlaeuterungen), 'text' (Einleitung).
+ * $cfg ist die flache Sicht der gewaehlten Pumpe. Rueckgabe: 'text' (Einleitung, HTML aus der
+ * Sprachdatei) und 'seiten' - je Seite 'seite' (Name = Ueberschrift), 'bild', 'zeilen' (Nummer, Typ,
+ * Name, Parameter, Eingaenge - REINER TEXT), 'schritte' und 'hinweise' (reiner Text) sowie 'zu'
+ * (Erlaeuterungen, HTML aus der Sprachdatei).
  */
 function pw_bausteinliste($cfg)
 {
     $felder = array_merge(pw_felderliste(), pw_statusliste());
     $thema = pw_mqtt_thema($cfg);
-    $mono = function ($t) { return "<span class='sm-mono'>" . pw_e($t) . '</span>'; };
-    $vi = function ($feld) use ($felder, $thema, $mono) {
-        return $mono(isset($felder[$feld]) ? pw_eingangsname($thema, $feld) : '?' . $feld);
+    /* Name eines Eingangs fuer die gewaehlte Pumpe - dieselbe Quelle wie pw_vorlage_vi(). */
+    $vi = function ($feld) use ($felder, $thema) {
+        return isset($felder[$feld]) ? pw_eingangsname($thema, $feld) : '?' . $feld;
     };
     /* Die Befehlstitel der VO-Vorlage, drei je Pumpe in der Reihenfolge von
      * pw_vorlage_pumpen() - gelesen aus der Vorlage selbst. */
@@ -2384,58 +2389,225 @@ function pw_bausteinliste($cfg)
         if (isset($pp['id'], $cfg['id']) && (string) $pp['id'] === (string) $cfg['id']) { $stelle = $i; break; }
         $i++;
     }
-    $vt = function ($n) use ($titel, $stelle, $mono) {
+    $vt = function ($n) use ($titel, $stelle) {
         $k = $stelle * 3 + $n;
-        return $mono(isset($titel[$k]) ? $titel[$k] : '?');
+        return isset($titel[$k]) ? $titel[$k] : '?';
     };
 
-    $z = array();
-    $nr = array();
-    $neu = function ($k, $typ, $name, $param, $eing) use (&$z, &$nr) {
-        $nr[$k] = count($z) + 1;
-        $z[] = array($nr[$k], $typ, $name, $param, $eing);
-    };
-    $r = function ($k) use (&$nr) { return '#' . $nr[$k]; };
-    $rf = function ($feld) use (&$nr, $vi) { return '#' . $nr['f_' . $feld] . ' ' . $vi($feld); };
-    $ra = function ($feld) use (&$nr, $vi) {
-        return sprintf(pw_t('LOX.BS_AUSGANG_VON'), $vi($feld), '#' . $nr['f_' . $feld]);
-    };
-    $opt = function ($s) { return sprintf(pw_t('LOX.BS_OPTIONAL'), $s); };
-
-    foreach (array('sperre', 'befund', 'status_zaehler', 'lauf_s_tag', 'starts_tag') as $f) {
-        $neu('f_' . $f, pw_t('LOX.BS_T_VI'), $vi($f),
-             isset($felder[$f]) ? pw_t($felder[$f]['bed']) : '?', pw_t('LOX.BS_E_VORLAGE'));
-    }
-    $neu('schwell', $opt(pw_t('LOX.B1_TYP')), pw_t('LOX.B1_NAME'), pw_t('LOX.B1_PARAM'),
-         sprintf(pw_t('LOX.BS_E_V'), $ra('sperre')));
-    $neu('nicht', $opt(pw_t('LOX.BS_T_NICHT')), pw_t('LOX.BS_N_NICHT'), pw_t('LOX.BS_P_KEINE'),
-         sprintf(pw_t('LOX.BS_E_I'), $r('schwell')));
-    $neu('aktor', $opt(pw_t('LOX.B2_TYP')), pw_t('LOX.B2_NAME'), sprintf(pw_t('LOX.BS_P_AKTOR'), $r('schwell')),
-         sprintf(pw_t('LOX.BS_E_AKTOR'), $r('nicht')));
-    $neu('status', pw_t('LOX.B3_TYP'), pw_t('LOX.B3_NAME'), pw_t('LOX.B3_PARAM'),
-         sprintf(pw_t('LOX.BS_E_I1'), $ra('befund')));
-    $neu('valid', pw_t('LOX.B6_TYP'), pw_t('LOX.B6_NAME'), pw_t('LOX.B6_PARAM'),
-         sprintf(pw_t('LOX.BS_E_VALID'), $ra('status_zaehler')));
-    $neu('oder', pw_t('LOX.BS_T_ODER'), pw_t('LOX.BS_N_ODER'), pw_t('LOX.BS_P_KEINE'),
-         sprintf(pw_t('LOX.BS_E_ODER'), $ra('sperre'), $r('valid')));
-    $neu('benachr', pw_t('LOX.B4_TYP'), pw_t('LOX.B4_NAME'), sprintf(pw_t('LOX.B4_PARAM'), $r('status'), $r('oder')),
-         sprintf(pw_t('LOX.BS_E_NUR'), $r('oder')));
-    $neu('taster', $opt(pw_t('LOX.B5_TYP')), pw_t('LOX.B5_NAME'), pw_t('LOX.B5_PARAM'), pw_t('LOX.BS_E_TASTER'));
-    $neu('vo_quitt', $opt(pw_t('LOX.BS_T_VO')), $vt(1), pw_t('LOX.BS_P_VO_QUITT'),
-         sprintf(pw_t('LOX.BS_E_I'), $r('taster')));
-    $neu('vo_watt', $opt(pw_t('LOX.BS_T_VO')), $vt(0), pw_t('LOX.BS_P_VO_WATT'), pw_t('LOX.BS_E_WATT'));
-    $neu('vo_anf', $opt(pw_t('LOX.BS_T_VO')), $vt(2), pw_t('LOX.BS_P_VO_ANF'), pw_t('LOX.BS_E_ANF'));
-    $neu('statistik', pw_t('LOX.B7_TYP'), pw_t('LOX.B7_NAME'), pw_t('LOX.B7_PARAM'),
-         sprintf(pw_t('LOX.BS_E_STATISTIK'), $rf('lauf_s_tag'), $rf('starts_tag')));
-
-    $zu = array(
-        sprintf(pw_t('LOX.BSP_ZU1'), $r('schwell'), $r('aktor')),
-        sprintf(pw_t('LOX.BSP_ZU4'), $r('oder'), $r('benachr')),
-        sprintf(pw_t('LOX.BSP_ZU6'), $r('valid')),
-        sprintf(pw_t('LOX.BSP_ZU7'), $r('statistik')),
+    /* Zeile: array(Nr, Typ, Name, Parameter, Eingaenge) - reiner Text, die Oberflaeche maskiert.
+     * Nummern FEST wie im Musterprojekt (Entscheidung 2): Vorwaertsverweise (#7 -> #21, #10 -> #18,
+     * #12 -> #26) sind damit kein Sonderfall mehr. */
+    $seiten = array();
+    $seiten[] = array(
+        'seite' => pw_t('LOX.P1_SEITE'),
+        'bild' => 'einbindung_loxone.png',
+        'zeilen' => array(
+            array(1, pw_t('LOX.BT_VI'), $vi('sperre'),
+                  pw_t('LOX.P1_01_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(2, pw_t('LOX.BT_VI'), $vi('befund'),
+                  pw_t('LOX.P1_02_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(3, pw_t('LOX.BT_VI'), $vi('status_zaehler'),
+                  pw_t('LOX.P1_03_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(4, pw_t('LOX.BT_VI'), $vi('lauf_s_tag'),
+                  pw_t('LOX.P1_04_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(5, pw_t('LOX.BT_VI'), $vi('starts_tag'),
+                  pw_t('LOX.P1_05_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(6, pw_t('LOX.BT_SWS'), pw_t('LOX.P1_06_NAME'),
+                  pw_t('LOX.P1_06_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), sprintf(pw_t('LOX.BS_AUSGANG_VON'), $vi('sperre'), '#1'))),
+            array(7, pw_t('LOX.BT_NICHT'), pw_t('LOX.P1_07_NAME'),
+                  pw_t('LOX.P1_07_PARAM'),
+                  'I = #21'),
+            array(8, pw_t('LOX.BT_VE'), pw_t('LOX.P1_08_NAME'),
+                  pw_t('LOX.P1_08_PARAM'),
+                  '–'),
+            array(9, pw_t('LOX.BT_STATUS'), pw_t('LOX.P1_09_NAME'),
+                  pw_t('LOX.P1_09_PARAM'),
+                  'V1 = ' . sprintf(pw_t('LOX.BS_AUSGANG_VON'), $vi('befund'), '#2') . ', ' . 'V2 = ' . '#22'),
+            array(10, pw_t('LOX.BT_VALID'), pw_t('LOX.P1_10_NAME'),
+                  pw_t('LOX.P1_10_PARAM'),
+                  'V = ' . sprintf(pw_t('LOX.BS_AUSGANG_VON'), $vi('status_zaehler'), '#3') . ', ' . 'En = ' . '#18'),
+            array(11, pw_t('LOX.BT_ODER'), pw_t('LOX.P1_11_NAME'),
+                  '–',
+                  'I1 = ' . sprintf(pw_t('LOX.BS_AUSGANG_VON'), $vi('sperre'), '#1') . ', ' . 'I2 = ' . sprintf(pw_t('LOX.BS_AUSGANG_X'), 'E', '#10')),
+            array(12, pw_t('LOX.BT_BENACHR'), pw_t('LOX.P1_12_NAME'),
+                  pw_t('LOX.P1_12_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_NUR'), '#26')),
+            array(13, pw_t('LOX.BT_VE_TASTE'), pw_t('LOX.P1_13_NAME'),
+                  pw_t('LOX.P1_13_PARAM'),
+                  '–'),
+            array(14, pw_t('LOX.BT_VQ'), $vt(1),
+                  pw_t('LOX.P1_14_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#13')),
+            array(15, pw_t('LOX.BT_IMPULS'), pw_t('LOX.P1_15_NAME'),
+                  pw_t('LOX.P1_15_PARAM'),
+                  '–'),
+            array(16, pw_t('LOX.BT_FORMEL'), pw_t('LOX.P1_16_NAME'),
+                  pw_t('LOX.P1_16_PARAM'),
+                  'I1 = ' . '#8' . ', ' . 'I2 = ' . sprintf(pw_t('LOX.BS_AUSGANG_X'), 'Q', '#15')),
+            array(17, pw_t('LOX.BT_VQ'), $vt(0),
+                  pw_t('LOX.P1_17_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#16')),
+            array(18, pw_t('LOX.BT_KONST'), pw_t('LOX.P1_18_NAME'),
+                  pw_t('LOX.P1_18_PARAM'),
+                  '–'),
+            array(19, pw_t('LOX.BT_VE_SCHALTER'), pw_t('LOX.P1_19_NAME'),
+                  pw_t('LOX.P1_19_PARAM'),
+                  '–'),
+            array(20, pw_t('LOX.BT_VQ'), $vt(2),
+                  pw_t('LOX.P1_20_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#19')),
+            array(21, pw_t('LOX.BT_EVZ'), pw_t('LOX.P1_21_NAME'),
+                  pw_t('LOX.P1_21_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#6')),
+            array(22, pw_t('LOX.BT_VI'), $vi('beiwert'),
+                  pw_t('LOX.P1_22_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(23, pw_t('LOX.BT_VI'), $vi('quittung'),
+                  pw_t('LOX.P1_23_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(24, pw_t('LOX.BT_SWS'), pw_t('LOX.P1_24_NAME'),
+                  pw_t('LOX.P1_24_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#2')),
+            array(25, pw_t('LOX.BT_EVZ'), pw_t('LOX.P1_25_NAME'),
+                  pw_t('LOX.P1_25_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#24')),
+            array(26, pw_t('LOX.BT_ODER'), pw_t('LOX.P1_26_NAME'),
+                  '–',
+                  'I1 = #11, I2 = #25'),
+            array(27, pw_t('LOX.BT_VI'), $vi('sperrgrund'),
+                  pw_t('LOX.P1_27_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(28, pw_t('LOX.BT_STATUS'), pw_t('LOX.P1_28_NAME'),
+                  pw_t('LOX.P1_28_PARAM'),
+                  'V1 = ' . sprintf(pw_t('LOX.BS_AUSGANG_VON'), $vi('sperre'), '#1') . ', ' . 'V2 = ' . '#27' . ', ' . 'V3 = ' . '#23'),
+        ),
+        'schritte' => array(
+            pw_t('LOX.P1_SCHRITT1'),
+            sprintf(pw_t('LOX.P1_SCHRITT2'), pw_eingangsname($thema, '…')),
+            sprintf(pw_t('LOX.P1_SCHRITT3'), $thema),
+            pw_t('LOX.P1_SCHRITT4'),
+            pw_t('LOX.P1_SCHRITT5'),
+            sprintf(pw_t('LOX.P1_SCHRITT6'), $vi('lauf_s_tag'), $vi('starts_tag')),
+            pw_t('LOX.P1_SCHRITT7'),
+            sprintf(pw_t('LOX.P1_SCHRITT8'), $vi('watt')),
+        ),
+        'hinweise' => array(
+            pw_t('LOX.P1_H1'),
+            pw_t('LOX.P1_H2'),
+            pw_t('LOX.P1_H3'),
+            pw_t('LOX.P1_H4'),
+            pw_t('LOX.P1_H5'),
+            pw_t('LOX.P1_H6'),
+        ),
+        'zu' => array(
+            pw_t('LOX.BSP_ZU1'),
+            pw_t('LOX.BSP_ZU4'),
+            sprintf(pw_t('LOX.BSP_ZU6'), '#10'),
+        ),
     );
-    $text = sprintf(pw_t('LOX.S7_TEXT'), $r('f_sperre') . '–' . $r('f_starts_tag'), $r('aktor'), $r('statistik'));
-    return array('zeilen' => $z, 'zu' => $zu, 'text' => $text);
+    $seiten[] = array(
+        'seite' => pw_t('LOX.P2_SEITE'),
+        'bild' => 'einbindung_loxone_betrieb.png',
+        'zeilen' => array(
+            array(1, pw_t('LOX.BT_VI'), $vi('laeuft'),
+                  pw_t('LOX.P2_01_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(2, pw_t('LOX.BT_VI'), $vi('watt'),
+                  pw_t('LOX.P2_02_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(3, pw_t('LOX.BT_VI'), $vi('lauf_s'),
+                  pw_t('LOX.P2_03_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(4, pw_t('LOX.BT_VI'), $vi('letzter_lauf_s'),
+                  pw_t('LOX.P2_04_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(5, pw_t('LOX.BT_VI'), $vi('lauf_s_tag'),
+                  pw_t('LOX.P2_05_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(6, pw_t('LOX.BT_VI'), $vi('starts_tag'),
+                  pw_t('LOX.P2_06_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(7, pw_t('LOX.BT_VI'), $vi('laengster_tag'),
+                  pw_t('LOX.P2_07_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(8, pw_t('LOX.BT_VI'), $vi('lauf_s_vortag'),
+                  pw_t('LOX.P2_08_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(9, pw_t('LOX.BT_VI'), $vi('starts_vortag'),
+                  pw_t('LOX.P2_09_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(10, pw_t('LOX.BT_VI'), $vi('betrieb_h'),
+                  pw_t('LOX.P2_10_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(11, pw_t('LOX.BT_VI'), $vi('ruht_s'),
+                  pw_t('LOX.P2_11_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(12, pw_t('LOX.BT_VI'), $vi('zeitsprung'),
+                  pw_t('LOX.P2_12_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(13, pw_t('LOX.BT_VI'), $vi('volt'),
+                  pw_t('LOX.P2_13_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(14, pw_t('LOX.BT_VI'), $vi('ampere'),
+                  pw_t('LOX.P2_14_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(15, pw_t('LOX.BT_VI'), $vi('hertz'),
+                  pw_t('LOX.P2_15_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(16, pw_t('LOX.BT_VI'), $vi('quelle_online'),
+                  pw_t('LOX.P2_16_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(17, pw_t('LOX.BT_VI'), $vi('sperre'),
+                  pw_t('LOX.P2_17_PARAM'),
+                  pw_t('LOX.BS_E_IMPORT')),
+            array(18, pw_t('LOX.BT_STATUS'), pw_t('LOX.P2_18_NAME'),
+                  pw_t('LOX.P2_18_PARAM'),
+                  'V1 = #1, V2 = #2, V3 = #3, V4 = #11, V5 = #17, V6 = #4'),
+            array(19, pw_t('LOX.BT_STATUS'), pw_t('LOX.P2_19_NAME'),
+                  pw_t('LOX.P2_19_PARAM'),
+                  'V1 = #5, V2 = #6, V3 = #7, V4 = #8, V5 = #9, V6 = #10'),
+            array(20, pw_t('LOX.BT_STATUS'), pw_t('LOX.P2_20_NAME'),
+                  pw_t('LOX.P2_20_PARAM'),
+                  'V1 = #13, V2 = #14, V3 = #15, V4 = #16, V5 = #12'),
+            array(21, pw_t('LOX.BT_SWS'), pw_t('LOX.P2_21_NAME'),
+                  pw_t('LOX.P2_21_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#13')),
+            array(22, pw_t('LOX.BT_SWS'), pw_t('LOX.P2_22_NAME'),
+                  pw_t('LOX.P2_22_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#13')),
+            array(23, pw_t('LOX.BT_UND'), pw_t('LOX.P2_23_NAME'),
+                  '–',
+                  'I1 = #21, I2 = #22'),
+            array(24, pw_t('LOX.BT_EVZ'), pw_t('LOX.P2_24_NAME'),
+                  pw_t('LOX.P2_24_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#23')),
+            array(25, pw_t('LOX.BT_BENACHR'), pw_t('LOX.P2_25_NAME'),
+                  pw_t('LOX.P2_25_PARAM'),
+                  sprintf(pw_t('LOX.BS_E_EINGANG'), '#24')),
+        ),
+        'schritte' => array(
+            pw_t('LOX.P2_SCHRITT1'),
+            sprintf(pw_t('LOX.P2_SCHRITT2'), $vi('lauf_s_tag'), $vi('starts_tag'), $vi('sperre'), $vi('watt')),
+            pw_t('LOX.P2_SCHRITT3'),
+            pw_t('LOX.P2_SCHRITT4'),
+            pw_t('LOX.P2_SCHRITT5'),
+        ),
+        'hinweise' => array(
+            pw_t('LOX.P2_H1'),
+            pw_t('LOX.P2_H2'),
+            pw_t('LOX.P2_H3'),
+            pw_t('LOX.P2_H4'),
+        ),
+        'zu' => array(
+        ),
+    );
+    return array('text' => pw_t('LOX.S7_TEXT'), 'seiten' => $seiten);
 }
 
 /* ---------------- Sprache ---------------- */
