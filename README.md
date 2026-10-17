@@ -6,9 +6,25 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.12 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.13
+
+* **Englische Oberfläche, Reiter Einbindung in Loxone:** Die Erläuterung zum Wächter auf den
+  Lebenszeichen-Zähler nannte den Baustein „Analogue value validation“ und warnte vor „Analogue value
+  monitoring“. In der englischen Loxone Config heißen sie „Value Validator“ und „Analog Value Monitor“ –
+  so stehen sie jetzt dort wie schon im Kasten und in der Typspalte. Ebenso in der Schreibweise von
+  Config: Threshold Switch, Switch-On Delay, Pulse Generator, Formula, Notification, Constant und
+  Virtual Output Command in den Erläuterungen, Schritten, Hinweisen und Parametern; „Virtual Output“
+  auch in Schritt 1, im Kasten, in den Reitern Einstellungen und Bilanz, in den Befundtexten und in
+  der Hilfe (die Einstellung „Via Loxone (virtual output)“ bleibt).
+* **Zeile #8 der Seite „Pumpenwacht“:** Als Beispiel für den eigenen Zwischenzähler steht jetzt der
+  Baustein „Zähler“ (englisch „Meter“) statt eines „Energiezähler-Bausteins“, den es in Loxone Config
+  nicht gibt – wie im LoxBerry-Plugins Musterprojekt.
+* Kein Verhalten des Plugins geändert, Vorlagen unverändert (kein neuer Import nötig).
+  Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.0.12
 
