@@ -6,9 +6,35 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.14 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.14
+
+Umstellung auf MQTT wie im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt):
+Werte **und** Befehle gehen über das LoxBerry-MQTT-Gateway. Der Weg über HTTP bleibt für bestehende Anlagen
+erhalten.
+
+* **Befehle über MQTT (Befehlsbrücke):** Messwert, „Sperre quittieren“ und „Pumpe angefordert“ kommen als
+  `publish pumpe/befehl/watt <v.2>`, `publish pumpe/befehl/quittieren 1` und `publish pumpe/befehl/anforderung 1|0` am
+  gemeinsamen Ausgang „LoxBerry MQTT-Gateway“ an. Das Präfix ist das der ersten Pumpe; jede weitere Pumpe hat
+  `…/befehl/<kennung>/watt` usw. Jeder Befehl bekommt eine Quittung auf `…/quittung`, die Brücke meldet sich auf
+  `<präfix>/status/befehle`. Zwei neue Haken im Reiter MQTT, **ab Werk aus**: „Befehle über MQTT annehmen“ und – nur für
+  das Quittieren – „Sperre über MQTT quittieren“. Ohne den ersten Haken kommt über MQTT kein Messwert an, und das Plugin
+  meldet nach 3 Minuten „keine Meldung“ (Absicht: kein stiller Ausfall). Ein Messwert für eine Pumpe mit Messwertquelle
+  „MQTT“ wird über die Brücke abgelehnt (QUELLE_MQTT); ist der Zustand gerade gesperrt, wiederholt die Brücke bis 2 s.
+* **Reiter Einbindung in Loxone neu geordnet:** Gateway (V1 Abo, V2 Hakenliste mit 23 Datenpunkten, laeuft/befund/sperre
+  „Noncached“), Namenstabelle der einfachen Virtuellen Eingänge mit Kopierknopf, Befehle samt Knopf „Vorlage
+  MQTT-Befehle“, Ausfallerkennung in beiden Richtungen, die zwei Musterseiten (Bilder neu), Gegenprobe. Die Vorlage der
+  Eingänge für den MQTT-Weg (Virtuelle HTTP-Eingänge mit `http://localhost`) entfällt. Der HTTP-Weg (Endpunkt mit
+  Aktionstoken, Vorlage der Steuerbefehle, Vorlage der Eingänge über HTTP) steht zugeklappt darunter und wirkt unverändert.
+* **lauf_s meldet −1 statt 0,** solange kein frischer Messwert vorliegt – über MQTT, in der HTTP-Zeile und im JSON. Wer in
+  einer bestehenden Anlage auf „= 0“ prüft, sieht dann −1. Die Musterseite wertet lauf_s nur bei laufender Pumpe aus.
+* Reiter Test: neue Prüfzeilen „Namenstabelle“, „Befehlsbrücke“ und ihre Einrichtungsprüfung. Texte zur Altersrechnung
+  in Loxone berichtigt (der Ausfall zeigt `status_zaehler`, keine Rechnung mit `status_ts`).
+* Deinstallation hält die Befehlsbrücke an und tut nichts, wenn sie für ein anderes Plugin aufgerufen wird.
+* Am Gerät noch nicht gemessen; Brücke, Endpunkt und Oberfläche unter PHP 7.4, 8.4 und 8.5 geprüft.
 
 ## Neu in 1.0.13
 

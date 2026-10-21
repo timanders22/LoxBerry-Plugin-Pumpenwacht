@@ -125,87 +125,26 @@ if ($pw_selbst) {
     exit;
 }
 
-if ($pw_aktion === 'wert') {
-    $roh = (isset($_GET['watt']) && is_string($_GET['watt'])) ? trim($_GET['watt']) : '';     // Liste = keine Zahl
-    /* Abweisen statt zurechtbiegen: eine leere oder unlesbare Zahl darf
-     * nicht als 0 W gelten - 0 W hiesse "Pumpe steht", und genau diese
-     * Falschaussage verhindert der Kern mit seinem -1 (siehe pw_laeuft). */
-    /* C7 (1.0.4): auch Werte unter -5 W, NaN und unendliche werden
-     * abgewiesen. Bis 1.0.3 galt watt=-50 als "Pumpe steht" mit
-     * status_ok=1, und watt=1e999 ging als "watt INF" nach Loxone, danach
-     * HTTP 500 beim Speichern (Pruefbericht code C7). */
-    if ($roh === '' || !is_numeric(str_replace(',', '.', $roh)) || !pw_watt_gueltig($roh)) {
-        http_response_code(400);
-        echo "FEHLER;OK=0;GRUND=WATT\n";
-        echo "watt muss eine endliche Zahl ab -5 sein, empfangen wurde: "
-             . htmlspecialchars(substr($roh, 0, 40), ENT_QUOTES, 'UTF-8') . "\n";
-        exit;
+/* ---------------- wert, quittieren, anforderung ----------------
+ * Gruppe 5 / MQTT (1.0.14, Entwurf pw 3.2): die Pruefung und die Wirkung stehen in pw_befehl_ausfuehren()
+ * (pw_lib.php); dieselbe Funktion ruft die Befehlsbruecke (bin/befehle_zuordnung.php, Quelle 'mqtt'). Antwort, Code
+ * und Protokoll dieses Endpunkts sind unveraendert (Wirkungstest Quelle gegen Bau): 400 GRUND=WATT mit dem
+ * empfangenen Text, 200 OK=2;GRUND=BELEGT ohne Wiederholung, 500 GRUND=SPEICHERN, die Zeile mit BEFUND/SPERRE/
+ * GESENDET/FEHL, "Sperre quittiert (Endpunkt).", 400 GRUND=AN. Hier bleiben nur das Einlesen der Abfrage und die
+ * schon gepruefte Pumpe ($pw_cfg, Token und Kennung oben). Die Wertlieferung ist tokenpflichtig: wer beliebige
+ * Watt-Zahlen einliefern koennte, koennte eine Sperre ohne Quittungspflicht durch erfundene Normalwerte aufheben. */
+if ($pw_aktion === 'wert' || $pw_aktion === 'quittieren' || $pw_aktion === 'anforderung') {
+    $pw_par = array();
+    /* Jeder Parameter nur als Zeichenkette (vb_pw2): eine Liste (watt[]=, an[]=) gilt als keine Zahl bzw. als
+     * weder 0 noch 1 - die Funktion weist sie ab wie bisher. */
+    if ($pw_aktion === 'wert') {
+        $pw_par['watt'] = (isset($_GET['watt']) && is_string($_GET['watt'])) ? $_GET['watt'] : '';
+    } elseif ($pw_aktion === 'anforderung') {
+        $pw_par['an'] = (isset($_GET['an']) && is_string($_GET['an'])) ? $_GET['an'] : '';
     }
-    $watt = (float) str_replace(',', '.', $roh);
-    $jetzt = time();
-    list($neu, $grund, $versucht, $fehl) = pw_verarbeiten($watt, $pw_cfg, $jetzt, 'endpunkt');
-    if ($neu === null) {
-        /* "belegt" ist KEIN Fehler: ein anderer Durchlauf schreibt gerade,
-         * und der naechste Wert kommt ohnehin gleich. Der Miniserver soll
-         * daraus keinen Ausfall machen. */
-        if ($grund === 'belegt') {
-            echo "OK=2;GRUND=BELEGT\n";
-            exit;
-        }
-        http_response_code(500);
-        echo "FEHLER;OK=0;GRUND=SPEICHERN\n";
-        exit;
-    }
-    $felder = pw_felder($neu, $pw_cfg, $jetzt);
-    echo "OK=" . ($fehl === 0 ? 1 : 0) . ";BEFUND=" . $felder['befund']
-         . ";SPERRE=" . $felder['sperre'] . ";GESENDET=" . $versucht
-         . ";FEHL=" . $fehl . "\n";
-    /* B7 (1.0.4): GESENDET zaehlt, was an den UDP-Eingang des Gateways
-     * ABGESCHICKT wurde, FEHL die gescheiterten Sendeversuche. Ob es
-     * ankam, bestaetigt der Eingang nicht (Regeln/07) - bei 100 % Verlust
-     * stand hier bis 1.0.3 dieselbe Zeile ohne diesen Satz. */
-    echo $versucht . " Nachrichten an den UDP-Eingang des MQTT-Gateways abgeschickt, "
-         . $fehl . " gescheitert - ob sie ankamen, bestaetigt der Eingang nicht.\n";
-    exit;
-}
-
-if ($pw_aktion === 'quittieren') {
-    list($neu, $grund) = pw_zustand_aendern('pw_quittieren', $pw_cfg);
-    if ($neu === null) {
-        if ($grund === 'belegt') { echo "OK=2;GRUND=BELEGT\n"; exit; }
-        http_response_code(500);
-        echo "FEHLER;OK=0;GRUND=SPEICHERN\n";
-        exit;
-    }
-    pw_log('Sperre quittiert (Endpunkt).');
-    /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei.
-     * Und in derselben Form wie jede andere Antwort - eine
-     * Befehlserkennung auf OK= findet sonst hier nichts. */
-    $ist = pw_stand($pw_cfg['id']);
-    echo "OK=1;SPERRE=" . (!empty($ist['sperre']) ? 1 : 0)
-         . ";QUITTUNG=" . (!empty($ist['quittung']) ? 1 : 0) . "\n";
-    exit;
-}
-
-if ($pw_aktion === 'anforderung') {
-    $an = (isset($_GET['an']) && is_string($_GET['an'])) ? trim($_GET['an']) : '';     // Liste = weder 0 noch 1
-    if (!in_array($an, array('0', '1'), true)) {
-        http_response_code(400);
-        echo "FEHLER;OK=0;GRUND=AN\n";
-        echo "an muss 0 oder 1 sein.\n";
-        exit;
-    }
-    $pw_an = ($an === '1');
-    list($neu, $grund) = pw_zustand_aendern(
-        function ($s) use ($pw_an) { return pw_anfordern($s, $pw_an, time()); },
-        $pw_cfg);
-    if ($neu === null) {
-        if ($grund === 'belegt') { echo "OK=2;GRUND=BELEGT\n"; exit; }
-        http_response_code(500);
-        echo "FEHLER;OK=0;GRUND=SPEICHERN\n";
-        exit;
-    }
-    echo "OK=1;ANFORDERUNG=" . ($an === '1' ? 1 : 0) . "\n";
+    list($pw_code, $pw_text) = pw_befehl_ausfuehren($pw_aktion, $pw_par, $pw_cfg, 'http');
+    if ($pw_code !== 200) { http_response_code($pw_code); }
+    echo $pw_text;
     exit;
 }
 

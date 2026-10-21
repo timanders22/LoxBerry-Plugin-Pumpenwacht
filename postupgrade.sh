@@ -186,6 +186,21 @@ if [ -e "$MARKE" ]; then
     echo "<WARNING> Der Minutentakt arbeitet erst wieder, wenn sie eine Stunde alt ist."
 fi
 
+# ---------- Befehlsbruecke (Gruppe 5 / MQTT, 1.0.14) ----------
+# Erst NACH dem Entfernen der Marke starten: der Takt oben (PW_START_TROTZ_MARKE=1) ruft den Waechter, und der
+# findet die Marke und startet nicht (befehlsbruecke.sh: "Aktualisierung im Gang"). Sie startet nur mit dem Haken
+# "Befehle ueber MQTT annehmen"; ohne ihn sagt sie es, und das ist der Zustand ab Werk.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        Aktualisierung*) echo "<INFO> Befehlsbruecke: $BB_AUS" ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutentakt versucht es erneut." ;;
+    esac
+fi
+
 # Die WIRKUNG nachsehen, nicht den Rueckgabewert des Starts. "status" gibt 0
 # zurueck, wenn ein Zuhoerer laeuft. Dass keiner laeuft, ist auf einer Anlage
 # ohne MQTT-Quelle der richtige Zustand - deshalb steht dort kein <WARNING>,

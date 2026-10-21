@@ -173,6 +173,21 @@ $pw_voll = pw_config();
 $pw_cfg = pw_pumpe($pw_voll);
 $pw_ids = pw_pumpe_ids($pw_voll);
 
+/* Gruppe 5 / MQTT (1.0.14, Entwurf pw E9): der Waechter der Befehlsbruecke (gemeinsame Stammfassung). Er startet
+ * sie nur mit dem Haken "Befehle ueber MQTT annehmen", haelt sie sonst an und sendet <praefix>/status/befehle (nie
+ * retained). Er steht NACH den Sonderaufrufen (--mqtt-leeren, --mqtt-merken, --nach-update enden oben mit exit; --probe
+ * startet nichts) und VOR der Pruefung "kein Aktionstoken" und der Schleife ueber die Pumpen mit ihren
+ * Zustandssperren: die Bruecke braucht kein Token, und eine haengende Pumpe haelt sie nicht auf ("Waechter vor den
+ * Sperren", Gruppe 4). try/catch: ein Fehler hier aendert weder den Takt noch den Rueckgabewert. Die Bruecke haelt
+ * ihre eigene Sperre (waechter.lock); befehlsbruecke.sh schliesst geerbte Deskriptoren. */
+if (!in_array('--probe', $pw_argumente, true)) {
+    try {
+        pw_bruecke_waechter();
+    } catch (Throwable $pw_bw) {
+        pw_log('Befehlsbruecke: Waechter abgebrochen (' . get_class($pw_bw) . ') - der Takt ist davon nicht betroffen.');
+    }
+}
+
 if ((string) $pw_cfg['aktionstoken'] === '') {
     /* Die Oberflaeche wurde noch nie geoeffnet. Nichts tun und nichts
      * behaupten - aber es einmal sagen, damit man den Grund findet. */

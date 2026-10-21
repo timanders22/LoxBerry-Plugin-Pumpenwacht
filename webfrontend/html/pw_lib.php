@@ -220,6 +220,9 @@ function pw_grenzen()
         'quittung_noetig'    => array('art' => 'haken'),
         'mqtt_ein'           => array('art' => 'haken'),
         'mqtt_topic'         => array('art' => 'text', 'muster' => '#^[\w/\-]{1,64}$#'),
+        /* Gruppe 5 / MQTT (1.0.14): die beiden Haken der Befehlsbruecke (Entwurf pw 3.3). */
+        'befehle_mqtt_ein'     => array('art' => 'haken'),
+        'befehle_mqtt_steuern' => array('art' => 'haken'),
         'aktionstoken'       => array('art' => 'text', 'muster' => '#^[0-9a-f]{0,64}$#'),
         'formgeheim'         => array('art' => 'text', 'muster' => '#^[0-9a-f]{0,64}$#'),
         /* c1 (Verbesserungsbau 30.09.2026): Alarm zusaetzlich ueber SignalBot.
@@ -354,6 +357,12 @@ function pw_vorgaben()
         'stale_s'         => 180,
         'mqtt_ein'        => 1,
         'mqtt_topic'      => 'pumpe',
+        /* Gruppe 5 / MQTT (1.0.14): die beiden Haken der Befehlsbruecke, ab Werk aus (Entwurf pw 3.3,
+         * ENTSCHEIDUNGEN Gruppe 5 Punkt 4): "Befehle ueber MQTT annehmen" (Messwert, Anforderung, Quittieren)
+         * und der zweite Haken "Sperre ueber MQTT quittieren" - ohne ihn quittiert die Bruecke das Quittieren
+         * mit "abgelehnt: zweiter Haken aus". Sie gelten fuer das Plugin, nicht je Pumpe. */
+        'befehle_mqtt_ein'     => 0,
+        'befehle_mqtt_steuern' => 0,
         'aktionstoken'    => '',
         /* Grundlage des Formularmerkmals. Steht bewusst NEBEN dem
          * Aktionstoken und nicht an seiner Stelle: das Aktionstoken geht in
@@ -398,7 +407,9 @@ function pw_global_schluessel()
      * Praefix, entscheidet die Pumpe. */
     /* Die SignalBot-Kopplung (c1) gilt fuer das Plugin, nicht fuer eine
      * Pumpe: EIN Bot, EIN Empfaenger; die Nachricht nennt die Pumpe. */
-    return array('aktionstoken', 'formgeheim', 'mqtt_ein',
+    /* Gruppe 5 / MQTT (1.0.14): die Haken der Befehlsbruecke gelten fuer das Plugin - die Bruecke hoert unter
+     * dem Praefix der ersten Pumpe auf die Befehle ALLER Pumpen. */
+    return array('aktionstoken', 'formgeheim', 'mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern',
                  'signal_ein', 'signal_dringend', 'signal_ordner', 'signal_token', 'signal_an',
                  /* Nr. 36 b: die Ansage gilt fuer das Plugin; der Satz nennt die Pumpe. */
                  'tts', 'ansage_trockenlauf', 'ansage_ueberlast', 'ansage_dauerlauf', 'ansage_schaltspiel', 'ansage_kein_anlauf', 'ansage_still', 'ansage_ruht');
@@ -1850,8 +1861,9 @@ if (!defined('PW_ALARM_WIEDERHOLUNG')) { define('PW_ALARM_WIEDERHOLUNG', 3); }
  * Ueber MQTT gibt es KEIN Alter, nur einen Zeitstempel. Bis 0.9.7 ging ein
  * Thema "alter" hinaus, und weil pw_schritt() 'zeit' auf denselben
  * Augenblick setzt, trug es rechnerisch IMMER 0 - gemessen am 28.08.2026:
- * "publish pumpe/alter 0". Der Miniserver rechnet das Alter selbst:
- * Alter = (Loxone-Zeit + 1230768000) - ts.
+ * "publish pumpe/alter 0". Gruppe 5 (1.0.14): auch eine Altersrechnung in Loxone aus status_ts (Systemzeit
+ * minus ts) ist verworfen - der Miniserver rechnet in Ortszeit. Den Ausfall zeigt status_zaehler an einer
+ * Analogwertvalidierung (Musterseite #10).
  */
 function pw_publizieren($stand, $cfg, $jetzt = null, $erzwingen = false)
 {
@@ -1987,7 +1999,8 @@ function pw_felderliste()
         'sperrgrund'     => array('signed' => false, 'min' => 0,  'max' => 7,          'einheit' => '<v.0>',     'bed' => 'LOX.B_SPERRGRUND'),
         'quittung'       => array('signed' => false, 'min' => 0,  'max' => 1,          'einheit' => '<v.0>',     'bed' => 'LOX.B_QUITTUNG'),
         'watt'           => array('signed' => true,  'min' => -1, 'max' => 5000,       'einheit' => '<v.1> W',   'bed' => 'LOX.B_WATT'),
-        'lauf_s'         => array('signed' => false, 'min' => 0,  'max' => 86400,      'einheit' => '<v.0> s',   'bed' => 'LOX.B_LAUF_S'),
+        /* Gruppe 5 (1.0.14, Entwurf pw 2.3, E16): -1 = unbekannt, solange kein frischer Messwert vorliegt. */
+        'lauf_s'         => array('signed' => true,  'min' => -1, 'max' => 86400,      'einheit' => '<v.0> s',   'bed' => 'LOX.B_LAUF_S'),
         'letzter_lauf_s' => array('signed' => true,  'min' => -1, 'max' => 86400,      'einheit' => '<v.0> s',   'bed' => 'LOX.B_LETZTER'),
         'lauf_s_tag'     => array('signed' => false, 'min' => 0,  'max' => 86400,      'einheit' => '<v.0> s',   'bed' => 'LOX.B_TAG'),
         'starts_tag'     => array('signed' => false, 'min' => 0,  'max' => 1000,       'einheit' => '<v.0>',     'bed' => 'LOX.B_STARTS'),
@@ -2072,7 +2085,10 @@ function pw_felder($stand, $cfg, $jetzt = null)
         'quittung'       => !empty($stand['quittung']) ? 1 : 0,
         'watt'           => ($veraltet || !isset($stand['watt']) || $stand['watt'] === null)
                             ? -1 : round((float) $stand['watt'], 1),
-        'lauf_s'         => isset($stand['lauf_s']) ? (int) $stand['lauf_s'] : 0,
+        /* Gruppe 5 (1.0.14, Entwurf pw 2.3, E16): -1 statt 0, solange der Zustand unbekannt ist - ueber MQTT, in
+         * der HTTP-Zeile und im JSON. pw_schritt() setzt lauf_s bei laeuft != 1 auf 0 (pw_regel.php); 0 s hiesse
+         * "laeuft nicht", gemeint ist "unbekannt". Intern (stand.json) aendert sich nichts. */
+        'lauf_s'         => $veraltet ? -1 : (isset($stand['lauf_s']) ? (int) $stand['lauf_s'] : 0),
         'letzter_lauf_s' => isset($stand['letzter_lauf_s']) ? (int) $stand['letzter_lauf_s'] : -1,
         'lauf_s_tag'     => isset($stand['lauf_s_tag']) ? (int) $stand['lauf_s_tag'] : 0,
         'starts_tag'     => isset($stand['starts_tag']) ? (int) $stand['starts_tag'] : 0,
@@ -2224,7 +2240,11 @@ function pw_vi_zeile($titel, $kommentar, $r, $check = ' ')
          . 'Unit="' . pw_x($r['einheit']) . '" HintText=""/>' . "\r\n";
 }
 
-/** Vorlage der Gateway-Eingaenge nach dem Heimkino-Kunstgriff (12.08.2026):
+/** Gruppe 5 / MQTT (1.0.14, Entwurf pw 2.6, Gruppe 1 Nachtrag 2): diese Vorlage bietet die Oberflaeche nicht mehr an
+ *  - fuer Gateway-Werte legt man einfache Virtuelle Eingaenge an (Namenstabelle, pw_mqtt_namen()). Die Funktion
+ *  bleibt fuer die Selbstpruefung (Vorlagen wohlgeformt, Beschriftungen, Feldliste).
+ *
+ *  Vorlage der Gateway-Eingaenge nach dem Heimkino-Kunstgriff (12.08.2026):
  *  VirtualInHttp mit Dummy-Adresse http://localhost und Abfragezyklus 604800 s,
  *  nur damit Loxone die richtig benannten Eingaenge anlegt - die Werte kommen
  *  vom MQTT-Gateway. Format wie Original-Export aus Loxone Config 17.1.
@@ -2359,7 +2379,9 @@ function pw_vorlage_vo($cfg = null, $host = null)
  * Einfuegen, und 7 der 17 Zeilen hatten im Musterprojekt keine Entsprechung.
  *
  * Die Namen der Eingaenge kommen weiter aus pw_eingangsname() - derselben Quelle wie pw_vorlage_vi() -,
- * die Titel der Steuerbefehle werden weiter aus pw_vorlage_vo() GELESEN. Die Spalte "Eingaenge verbinden
+ * die Befehle kommen seit 1.0.14 aus der Befehlsbruecke (pw_bb_befehle(): Name wie im Musterprojekt, Befehl
+ * "publish <praefix>/befehl/..." am gemeinsamen Ausgang "LoxBerry MQTT-Gateway"; Gruppe 5, Entwurf pw 2.6).
+ * Die Spalte "Eingaenge verbinden
  * mit" steht in der Schreibweise von Werkzeuge/leitungen_setzen.py ("Eingang = Ausgang von pumpe_sperre
  * (#1)", "I1 = #11, I2 = #25", "En = #18"). Ein ODER/UND hat zwei Eingaenge (Regeln/09).
  *
@@ -2376,23 +2398,11 @@ function pw_bausteinliste($cfg)
     $vi = function ($feld) use ($felder, $thema) {
         return isset($felder[$feld]) ? pw_eingangsname($thema, $feld) : '?' . $feld;
     };
-    /* Die Befehlstitel der VO-Vorlage, drei je Pumpe in der Reihenfolge von
-     * pw_vorlage_pumpen() - gelesen aus der Vorlage selbst. */
-    $vo = pw_vorlage_vo();
-    $treffer = array();
-    preg_match_all('/<VirtualOutCmd Title="([^"]*)"/', $vo[1], $treffer);
-    $titel = array();
-    foreach ($treffer[1] as $t) { $titel[] = html_entity_decode($t, ENT_QUOTES, 'UTF-8'); }
-    $stelle = 0;
-    $i = 0;
-    foreach (pw_vorlage_pumpen() as $pp) {
-        if (isset($pp['id'], $cfg['id']) && (string) $pp['id'] === (string) $cfg['id']) { $stelle = $i; break; }
-        $i++;
-    }
-    $vt = function ($n) use ($titel, $stelle) {
-        $k = $stelle * 3 + $n;
-        return isset($titel[$k]) ? $titel[$k] : '?';
-    };
+    /* Gruppe 5 / MQTT (1.0.14): die drei Befehle DIESER Pumpe aus der Befehlsbruecke - Name wie im
+     * Musterprojekt (bei mehreren Pumpen mit " - <Name>"), Befehl unter dem Praefix der ersten Pumpe, fuer
+     * jede weitere mit ihrer Kennung (pw_bb_befehle()). Bis 1.0.13 las diese Funktion die Titel aus der
+     * HTTP-Vorlage pw_vorlage_vo(); die bleibt fuer bestehende Anlagen. */
+    $bef = pw_bb_befehle($cfg);
 
     /* Zeile: array(Nr, Typ, Name, Parameter, Eingaenge) - reiner Text, die Oberflaeche maskiert.
      * Nummern FEST wie im Musterprojekt (Entscheidung 2): Vorwaertsverweise (#7 -> #21, #10 -> #18,
@@ -2441,8 +2451,8 @@ function pw_bausteinliste($cfg)
             array(13, pw_t('LOX.BT_VE_TASTE'), pw_t('LOX.P1_13_NAME'),
                   pw_t('LOX.P1_13_PARAM'),
                   '–'),
-            array(14, pw_t('LOX.BT_VQ'), $vt(1),
-                  pw_t('LOX.P1_14_PARAM'),
+            array(14, pw_t('LOX.BT_VQ'), $bef['quittieren'][0],
+                  sprintf(pw_t('LOX.P1_14_PARAM'), $bef['quittieren'][1]),
                   sprintf(pw_t('LOX.BS_E_EINGANG'), '#13')),
             array(15, pw_t('LOX.BT_IMPULS'), pw_t('LOX.P1_15_NAME'),
                   pw_t('LOX.P1_15_PARAM'),
@@ -2450,8 +2460,8 @@ function pw_bausteinliste($cfg)
             array(16, pw_t('LOX.BT_FORMEL'), pw_t('LOX.P1_16_NAME'),
                   pw_t('LOX.P1_16_PARAM'),
                   'I1 = ' . '#8' . ', ' . 'I2 = ' . sprintf(pw_t('LOX.BS_AUSGANG_X'), 'Q', '#15')),
-            array(17, pw_t('LOX.BT_VQ'), $vt(0),
-                  pw_t('LOX.P1_17_PARAM'),
+            array(17, pw_t('LOX.BT_VQ'), $bef['watt'][0],
+                  sprintf(pw_t('LOX.P1_17_PARAM'), $bef['watt'][1]),
                   sprintf(pw_t('LOX.BS_E_EINGANG'), '#16')),
             array(18, pw_t('LOX.BT_KONST'), pw_t('LOX.P1_18_NAME'),
                   pw_t('LOX.P1_18_PARAM'),
@@ -2459,8 +2469,8 @@ function pw_bausteinliste($cfg)
             array(19, pw_t('LOX.BT_VE_SCHALTER'), pw_t('LOX.P1_19_NAME'),
                   pw_t('LOX.P1_19_PARAM'),
                   '–'),
-            array(20, pw_t('LOX.BT_VQ'), $vt(2),
-                  pw_t('LOX.P1_20_PARAM'),
+            array(20, pw_t('LOX.BT_VQ'), $bef['anforderung'][0],
+                  sprintf(pw_t('LOX.P1_20_PARAM'), $bef['anforderung'][1], $bef['anforderung'][2]),
                   sprintf(pw_t('LOX.BS_E_EINGANG'), '#19')),
             array(21, pw_t('LOX.BT_EVZ'), pw_t('LOX.P1_21_NAME'),
                   pw_t('LOX.P1_21_PARAM'),
@@ -2963,6 +2973,13 @@ function pw_sicherung_lesen($roh)
         }
     }
 
+    /* Gruppe 5 / MQTT (1.0.14, Entwurf pw 3.3): eine Sicherung bis 1.0.13 kennt die beiden Haken der
+     * Befehlsbruecke nicht - damals gab es keine Bruecke. Sie ergibt deshalb "aus" (0), nicht den laufenden
+     * Wert; dass sie fehlten, sagt die Liste "unveraendert" unten wie bei jedem fehlenden Schluessel. */
+    foreach (array('befehle_mqtt_ein', 'befehle_mqtt_steuern') as $pw_bk) {
+        if (!isset($gesehen[$pw_bk])) { $neu[$pw_bk] = 0; }
+    }
+
     /* 4. Eine Datei ohne einen einzigen bekannten Schluessel ist keine. */
     if ($anzahl === 0) {
         $mangel[] = pw_t('EINST.SICH_LEER');
@@ -3298,6 +3315,17 @@ function pw_selbstpruefung($cfg = null)
     /* Nr. 36 b: die Ansage bei Alarm (Ausgabeart, Erreichbarkeit, letzte Ansage). */
     list($pw_aok, $pw_atext) = pw_pruefe_ansage($cfg);
     $add('DURCHSAGE.PRUEF', $pw_aok, $pw_atext);
+
+    /* --- Gruppe 5 / MQTT (1.0.14): Namenstabelle und Befehlsbruecke ---
+     * Die Namen der Einbindung in Loxone gegen die gesendeten Themen (Entwurf pw 2.4); die Bruecke gemessen am
+     * Erzeugnis wie im Waechter, mit der letzten Quittung (Entwurf gemeinsam 2.11), dazu ihre Einrichtungspruefung
+     * (--pruefen). Aus (Haken) ist ein Strich, kein Kreuz. */
+    list($pw_nok, $pw_ntext) = pw_mqtt_namen_probe($cfg);
+    $add('PRUEF.NAMEN', $pw_nok, $pw_ntext);
+    list($pw_bok, $pw_btext) = pw_pruef_bruecke();
+    $add('PRUEF.BRUECKE', $pw_bok, $pw_btext);
+    list($pw_eok, $pw_etext) = pw_pruef_bruecke_einrichtung();
+    $add('PRUEF.BRUECKE_PRUEFEN', $pw_eok, $pw_etext);
 
     /* --- Der Kern --- */
     list($kn, $kf) = pw_selbsttest(false);
@@ -5450,4 +5478,481 @@ function pw_pruefe_signal($cfg)
         return array(1, sprintf(pw_t('PRUEF.SIGNAL_ZULETZT'), $ordner, date('d.m.Y H:i', isset($e['zeit']) ? (int) $e['zeit'] : 0)));
     }
     return array(1, sprintf(pw_t('PRUEF.SIGNAL_ERREICHT'), $ordner));
+}
+
+/* ==================================================================
+ * Gruppe 5 / MQTT (1.0.14): Namenstabelle, Befehle und Befehlsbruecke
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe5_pw.txt (E1-E17 nach Empfehlung bzw. nach
+ * ENTSCHEIDUNGEN_GRUPPE5_MQTT.md), Bauvorschrift wz_bild/GRUPPE5_BAUVORSCHRIFT.md. Fuer Werte ueber
+ * das MQTT-Gateway gibt es KEINE Importvorlage mehr: je Wert ein einfacher Virtueller Eingang, Name genau
+ * so, wie das Gateway ihn vergibt (pw_eingangsname()). Die Namen kommen aus EINER Funktion
+ * (pw_mqtt_namen()) fuer Namenstabelle, Hakenliste, Baustein-Liste und Selbstpruefung. Die
+ * HTTP-Vorlagen bleiben fuer bestehende Anlagen (Reiter "Einbindung in Loxone", zugeklappt).
+ * ================================================================== */
+
+/** Themen, die das Plugin sendet, die die Musterseiten aber nicht brauchen (Entwurf pw 2.4): die
+ *  Zeitstempel (kein Alter in Loxone, Regeln/07), status_ok (status_zaehler und befund tragen den Ausfall)
+ *  und status/befehle (Lebenszeichen der Bruecke; Haken ja, Musterseite nein). */
+function pw_mqtt_nicht_im_muster()
+{
+    return array('status_ok', 'status_ts', 'status_quelle_ts', 'status/befehle');
+}
+
+/** Die drei Alarmwege gehen in jedem Durchgang hinaus (pw_alarm_themen()); unter Gateway V2 stehen sie
+ *  auf "Noncached" (Entwurf pw 2.4, E5; ENTSCHEIDUNGEN Gruppe 5 Punkt 4) - nach einem Neustart des
+ *  Miniservers kommen sie spaetestens mit dem naechsten Minutentakt, nicht erst mit dem reconnect. */
+function pw_mqtt_noncached()
+{
+    return pw_alarm_themen();
+}
+
+/** Der Bereich einer Zeile der Felderliste fuer die Namenstabelle: "-1 … 1", "0 … 86400 s". */
+function pw_mqtt_bereich(array $r)
+{
+    $e = trim(preg_replace('/<v(\.\d)?>/', '', (string) $r['einheit']));
+    return (0 + $r['min']) . ' … ' . (0 + $r['max']) . ($e !== '' ? ' ' . $e : '');
+}
+
+/**
+ * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 2) - EINE Liste fuer Tabelle, Hakenliste,
+ * Themenliste und Selbstpruefung. Reihenfolge wie pw_felderliste(), dann pw_statusliste() und
+ * status/befehle (sendet die Befehlsbruecke unter dem Praefix der ERSTEN Pumpe). Je Zeile: thema, name,
+ * bedeutung (Sprachschluessel), bereich, im_muster, haken, noncached, retained.
+ * $cfg: flache Sicht der Pumpe (ihr Praefix); $praefix: fuer die Gegenprobe.
+ */
+function pw_mqtt_namen($cfg = null, $praefix = null)
+{
+    if ($cfg === null) { $cfg = pw_pumpe(pw_config(false)); }
+    if ($praefix === null) { $praefix = pw_mqtt_thema($cfg); }
+    $ohne = pw_mqtt_nicht_im_muster();
+    $nc = pw_mqtt_noncached();
+    $ret = pw_retain_liste();
+    $aus = array();
+    foreach (array_merge(pw_felderliste(), pw_statusliste()) as $t => $r) {
+        $aus[] = array('thema' => $t, 'name' => pw_eingangsname($praefix, $t), 'bedeutung' => $r['bed'],
+                       'bereich' => pw_mqtt_bereich($r), 'im_muster' => !in_array($t, $ohne, true),
+                       'haken' => !in_array($t, $ohne, true), 'noncached' => in_array($t, $nc, true),
+                       'retained' => in_array($t, $ret, true));
+    }
+    /* Das Lebenszeichen der Bruecke steht unter dem Praefix der ERSTEN Pumpe (Entwurf pw E2). */
+    $bp = pw_befehle_praefix();
+    if ($bp === $praefix) {
+        $aus[] = array('thema' => 'status/befehle', 'name' => pw_eingangsname($praefix, 'status/befehle'),
+                       'bedeutung' => 'BEFEHL.TH_STATUS', 'bereich' => '-1 … 1', 'im_muster' => false,
+                       'haken' => true, 'noncached' => false, 'retained' => false);
+    }
+    return $aus;
+}
+
+/** Hakenliste fuer Gateway V2 (Entwurf pw 2.4): die 22 Zahlen der Musterseiten und status/befehle, 23
+ *  Haken; laeuft, befund und sperre mit "Noncached". Je Zeile array(Thema voll, Name, Bedeutung, noncached). */
+function pw_mqtt_hakenliste($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_pumpe(pw_config(false)); }
+    $p = pw_mqtt_thema($cfg);
+    $aus = array();
+    foreach (pw_mqtt_namen($cfg, $p) as $z) {
+        if ($z['haken']) { $aus[] = array($p . '/' . $z['thema'], $z['name'], $z['bedeutung'], $z['noncached']); }
+    }
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Namenstabelle" (Entwurf pw 2.4): jeder Name der Tabelle ist ein Thema aus pw_felderliste()
+ * bzw. pw_statusliste() (dazu status/befehle der Bruecke) unter dem Praefix der Pumpe, und jedes Thema steht
+ * in der Tabelle. Die Gegenseite wird OHNE pw_eingangsname() gebildet. $namen: fuer die Gegenprobe (ein
+ * falsch geschriebener Name muss rot werden). Rueckgabe array(1|0, Text ohne HTML).
+ */
+function pw_mqtt_namen_probe($cfg = null, $namen = null)
+{
+    if ($cfg === null) { $cfg = pw_pumpe(pw_config(false)); }
+    $p = pw_mqtt_thema($cfg);
+    if ($namen === null) {
+        $namen = array();
+        foreach (pw_mqtt_namen($cfg, $p) as $z) { $namen[] = $z['name']; }
+    }
+    $themen = array_merge(array_keys(pw_felderliste()), array_keys(pw_statusliste()));
+    if (pw_befehle_praefix() === $p) { $themen[] = 'status/befehle'; }
+    $soll = array();
+    foreach ($themen as $t) { $soll[] = strtr($p . '/' . $t, array('/' => '_', ' ' => '_', '%' => '_')); }
+    $nur_tabelle = array_values(array_diff($namen, $soll));
+    $nur_themen = array_values(array_diff($soll, $namen));
+    if ($nur_tabelle || $nur_themen) {
+        return array(0, sprintf(pw_t('PRUEF.A_NAMEN_NEIN'), $nur_tabelle ? implode(', ', $nur_tabelle) : '-',
+                                $nur_themen ? implode(', ', $nur_themen) : '-'));
+    }
+    return array(1, sprintf(pw_t('PRUEF.A_NAMEN_JA'), count($namen)));
+}
+
+/* ---------------- Befehle: EINE Funktion fuer Endpunkt und Befehlsbruecke ----------------
+ * Bis 1.0.13 stand diese Pruefung in webfrontend/html/index.php (aktion=wert, quittieren, anforderung).
+ * Seit 1.0.14 rufen der HTTP-Endpunkt (Quelle 'http', Antwort wortgleich wie bisher) und die Befehlsbruecke
+ * (Quelle 'mqtt', bin/befehle_zuordnung.php) dieselbe Funktion: Wertpruefung, pw_verarbeiten() bzw.
+ * pw_zustand_aendern() mit pw_quittieren()/pw_anfordern(). Token- und Kennungspruefung des Endpunkts bleiben
+ * dort; auf dem MQTT-Weg ersetzen Broker-Anmeldung und die Haken das Token (Entwurf gemeinsam E13). */
+
+/** Wie oft und wie lange der MQTT-Weg bei einer belegten Zustandssperre wiederholt (Entwurf pw E6): 10 x 200 ms.
+ *  Der Minutentakt haelt die Sperre je Pumpe nur kurz; ohne Wiederholung ginge ein Quittieren waehrend eines
+ *  Takts verloren, und die zweite Betaetigung prallte an der Sperrzeit ab. Der HTTP-Weg wiederholt nicht. */
+if (!defined('PW_BELEGT_VERSUCHE')) { define('PW_BELEGT_VERSUCHE', 10); }
+if (!defined('PW_BELEGT_PAUSE_US')) { define('PW_BELEGT_PAUSE_US', 200000); }
+
+/**
+ * Einen Befehl ausfuehren. $aktion 'wert' (array('watt' => Text)), 'quittieren' (array()) oder 'anforderung'
+ * (array('an' => '0'|'1')). $ziel: flache Sicht einer Pumpe (Endpunkt, schon geprueft) oder ihre Kennung bzw.
+ * null fuer die erste Pumpe (Befehlsbruecke). Rueckgabe array(HTTP-Code, Antworttext samt Zeilenenden) - der
+ * Text wortgleich wie bis 1.0.13 am Endpunkt; nur der MQTT-Weg kennt QUELLE_MQTT und wiederholt bei BELEGT.
+ */
+function pw_befehl_ausfuehren($aktion, array $par, $ziel = null, $quelle = 'http')
+{
+    $mqtt = ($quelle === 'mqtt');
+    if (is_array($ziel)) {
+        $cfg = $ziel;
+    } else {
+        /* NUR LESEN wie der Endpunkt (pw_config(false)): nichts heilen, nichts anlegen. */
+        $voll = pw_config(false);
+        if ($ziel === null || (string) $ziel === '') {
+            $cfg = pw_pumpe($voll);
+        } elseif (in_array((string) $ziel, pw_pumpe_ids($voll), true)) {
+            $cfg = pw_pumpe($voll, (string) $ziel);
+        } else {
+            return array(400, "FEHLER;OK=0;GRUND=PUMPE\nEs gibt keine Pumpe mit dieser Kennung.\n");
+        }
+    }
+    /* Unter Sperre arbeiten; auf dem MQTT-Weg bei "belegt" bis zu 10 x 200 ms wiederholen (Entwurf pw E6). */
+    $mit_wiederholung = function ($fn) use ($mqtt) {
+        $n = $mqtt ? PW_BELEGT_VERSUCHE : 1;
+        for ($i = 1; ; $i++) {
+            $r = $fn();
+            if ($r[0] !== null || $r[1] !== 'belegt' || $i >= $n) { return $r; }
+            usleep(PW_BELEGT_PAUSE_US);
+        }
+    };
+    if ($aktion === 'wert') {
+        $roh = (isset($par['watt']) && is_string($par['watt'])) ? trim($par['watt']) : '';     // Liste = keine Zahl
+        /* Abweisen statt zurechtbiegen: eine leere oder unlesbare Zahl darf nicht als 0 W gelten - 0 W hiesse
+         * "Pumpe steht" (C7, 1.0.4: auch unter -5 W, NaN und unendlich). */
+        if ($roh === '' || !is_numeric(str_replace(',', '.', $roh)) || !pw_watt_gueltig($roh)) {
+            return array(400, "FEHLER;OK=0;GRUND=WATT\n"
+                . "watt muss eine endliche Zahl ab -5 sein, empfangen wurde: "
+                . htmlspecialchars(substr($roh, 0, 40), ENT_QUOTES, 'UTF-8') . "\n");
+        }
+        /* Entwurf pw E7: eine Pumpe mit Messwertquelle "MQTT" liest ihren Messwert selbst am Broker. Ein zweiter
+         * Messwert aus Loxone mischte zwei Quellen (Laufzeit, Starts und Schaltspiel wuerden falsch) - auf dem
+         * MQTT-Weg abgelehnt. Der HTTP-Weg nimmt ihn wie bis 1.0.13 an (Sammelstelle). */
+        if ($mqtt && isset($cfg['quelle']) && (string) $cfg['quelle'] === 'mqtt') {
+            return array(409, "FEHLER;OK=0;GRUND=QUELLE_MQTT\n");
+        }
+        $watt = (float) str_replace(',', '.', $roh);
+        $jetzt = time();
+        list($neu, $grund, $versucht, $fehl) = $mit_wiederholung(function () use ($watt, $cfg, &$jetzt, $mqtt) {
+            $jetzt = time();
+            return pw_verarbeiten($watt, $cfg, $jetzt, $mqtt ? 'mqtt' : 'endpunkt');
+        });
+        if ($neu === null) {
+            /* "belegt" ist KEIN Fehler: ein anderer Durchlauf schreibt gerade, und der naechste Wert kommt
+             * ohnehin gleich. Der Miniserver soll daraus keinen Ausfall machen. */
+            if ($grund === 'belegt') { return array(200, "OK=2;GRUND=BELEGT\n"); }
+            return array(500, "FEHLER;OK=0;GRUND=SPEICHERN\n");
+        }
+        $felder = pw_felder($neu, $cfg, $jetzt);
+        /* B7 (1.0.4): GESENDET zaehlt, was an den UDP-Eingang des Gateways ABGESCHICKT wurde, FEHL die
+         * gescheiterten Sendeversuche. Ob es ankam, bestaetigt der Eingang nicht (Regeln/07). */
+        return array(200, "OK=" . ($fehl === 0 ? 1 : 0) . ";BEFUND=" . $felder['befund']
+            . ";SPERRE=" . $felder['sperre'] . ";GESENDET=" . $versucht . ";FEHL=" . $fehl . "\n"
+            . $versucht . " Nachrichten an den UDP-Eingang des MQTT-Gateways abgeschickt, "
+            . $fehl . " gescheitert - ob sie ankamen, bestaetigt der Eingang nicht.\n");
+    }
+    if ($aktion === 'quittieren') {
+        list($neu, $grund) = $mit_wiederholung(function () use ($cfg) {
+            return pw_zustand_aendern('pw_quittieren', $cfg);
+        });
+        if ($neu === null) {
+            if ($grund === 'belegt') { return array(200, "OK=2;GRUND=BELEGT\n"); }
+            return array(500, "FEHLER;OK=0;GRUND=SPEICHERN\n");
+        }
+        pw_log($mqtt ? 'Sperre quittiert (MQTT).' : 'Sperre quittiert (Endpunkt).');
+        /* Die Wirkung melden, nicht die Absicht: zurueckgelesen aus der Datei. */
+        $ist = pw_stand($cfg['id']);
+        return array(200, "OK=1;SPERRE=" . (!empty($ist['sperre']) ? 1 : 0)
+            . ";QUITTUNG=" . (!empty($ist['quittung']) ? 1 : 0) . "\n");
+    }
+    if ($aktion === 'anforderung') {
+        $an = (isset($par['an']) && is_string($par['an'])) ? trim($par['an']) : '';     // Liste = weder 0 noch 1
+        if (!in_array($an, array('0', '1'), true)) {
+            return array(400, "FEHLER;OK=0;GRUND=AN\nan muss 0 oder 1 sein.\n");
+        }
+        $pw_an = ($an === '1');
+        list($neu, $grund) = $mit_wiederholung(function () use ($cfg, $pw_an) {
+            return pw_zustand_aendern(function ($s) use ($pw_an) { return pw_anfordern($s, $pw_an, time()); }, $cfg);
+        });
+        if ($neu === null) {
+            if ($grund === 'belegt') { return array(200, "OK=2;GRUND=BELEGT\n"); }
+            return array(500, "FEHLER;OK=0;GRUND=SPEICHERN\n");
+        }
+        if ($mqtt) {
+            /* Nur der MQTT-Weg schreibt diese Zeile; Antwort und Protokoll des Endpunkts bleiben wie bis 1.0.13. */
+            pw_log('Anforderung ' . ($pw_an ? 'ein' : 'aus') . ' (MQTT) fuer ' . (string) $cfg['id'] . '.');
+        }
+        return array(200, "OK=1;ANFORDERUNG=" . ($an === '1' ? 1 : 0) . "\n");
+    }
+    return array(400, "FEHLER;OK=0;GRUND=AKTION_UNBEKANNT\n");
+}
+
+/** Die Rueckgabe von pw_befehl_ausfuehren() fuer die Bruecke: array(bool, Grund). 200 heisst angenommen (auch mit
+ *  OK=0 - der Messwert ist verarbeitet, nur ein Sendeversuch an Loxone scheiterte), ausser OK=2 (BELEGT nach allen
+ *  Wiederholungen); sonst der GRUND der Antwort (PUMPE, WATT, AN, SPEICHERN, BELEGT, QUELLE_MQTT) in die Quittung. */
+function pw_befehl_bruecke($r)
+{
+    $z = (is_array($r) && isset($r[1])) ? (string) $r[1] : '';
+    if (is_array($r) && isset($r[0]) && (int) $r[0] === 200 && strpos($z, 'OK=2') !== 0) { return array(true, ''); }
+    return array(false, preg_match('/GRUND=([A-Z0-9_]+)/', $z, $m) ? $m[1] : 'FEHLER');
+}
+
+/** Das Praefix der Befehlsbruecke: das MQTT-Praefix der ERSTEN Pumpe (Entwurf pw E2). Die Bruecke abonniert genau
+ *  ein <praefix>/befehl/#; jede Pumpe hat ein eigenes Praefix, die erste ist auch beim HTTP-Weg die ohne Angabe. */
+function pw_befehle_praefix()
+{
+    return pw_mqtt_thema(pw_pumpe(pw_config(false)));
+}
+
+/** Einstellungen fuer die Zuordnung (Entwurf gemeinsam 2.5): Praefix der ersten Pumpe, annehmen = Haken
+ *  "Befehle ueber MQTT annehmen" UND MQTT an, eingreifend = zweiter Haken "Sperre ueber MQTT quittieren". */
+function pw_befehle_einstellungen()
+{
+    $c = pw_config(false);
+    $mqtt = !empty($c['mqtt_ein']);
+    return array('praefix' => pw_mqtt_thema(pw_pumpe($c)),
+                 'annehmen' => !empty($c['befehle_mqtt_ein']) && $mqtt,
+                 'eingreifend' => !empty($c['befehle_mqtt_steuern']), 'mqtt_ein' => $mqtt);
+}
+
+/** Ist eine Kennung ueber die Bruecke erreichbar? Die Brueckenebene erlaubt [a-z0-9_], pw_kennung_gueltig() dazu
+ *  den Bindestrich (nur aus Sicherungen; die Oberflaeche vergibt pumpeN). Die erste Pumpe ist immer erreichbar
+ *  (Kurzform). */
+function pw_bruecke_erreichbar($id, $erste)
+{
+    return (string) $id === (string) $erste || preg_match('/^[a-z0-9_]{1,32}\z/', (string) $id) === 1;
+}
+
+/* ---------------- Befehlsbruecke (bin/befehlsbruecke.php, Stammfassung Werkzeuge/gemeinsam) ---------------- */
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, im Archiv neben webfrontend. */
+function pw_bruecke_datei()
+{
+    $p = pw_paths();
+    $kand = array();
+    if ($p['home'] !== '') { $kand[] = $p['home'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function pw_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = pw_bruecke_datei();
+    if ($f === '') { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Der Waechter der Bruecke aus dem Minutentakt (bin/pw_takt.php, Entwurf pw E9): startet sie nur mit dem Haken
+ * "Befehle ueber MQTT annehmen", haelt sie sonst an und sendet <praefix>/status/befehle. Der Aufrufer faengt jede
+ * Ausnahme (try/catch in bin/pw_takt.php) - der Takt bleibt davon unberuehrt. Rueckgabe wie bb_waechter() oder
+ * array(null, Grund) ohne Bruecke.
+ */
+function pw_bruecke_waechter()
+{
+    if (!pw_bruecke_laden()) { return array(null, 'bin/befehlsbruecke.php fehlt'); }
+    return bb_waechter();
+}
+
+/**
+ * Direktstart bzw. -stopp beim Speichern des Reiters MQTT (Bauart wp_bruecke_schalten()): der Waechter im
+ * Minutentakt startet nach einem Start hoechstens alle 600 s neu. befehlsbruecke.sh start startet nur nach
+ * --soll, nie als root, nie waehrend eines Updates, nie doppelt.
+ * Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl', Ausgabe).
+ */
+function pw_bruecke_schalten()
+{
+    if (!pw_bruecke_laden()) { return array('', ''); }
+    $p = bb_pfade();
+    if (!$p) { return array('', ''); }
+    $e = pw_befehle_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft) { return array('', ''); }
+        list($rc, $aus) = bb_sh($p, 'start');
+        if ($rc === 0 && bb_dienste()) {
+            pw_log('Befehlsbruecke beim Speichern gestartet.');
+            return array('ein', $aus);
+        }
+        pw_log('Befehlsbruecke: Start beim Speichern gescheitert (Rueckgabe ' . (int) $rc . '): ' . substr($aus, 0, 200));
+        return array('start_fehl', $aus);
+    }
+    if (!$laeuft) { return array('', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    if ($rc === 0 && !bb_dienste()) {
+        pw_log('Befehlsbruecke beim Speichern angehalten.');
+        return array('aus', $aus);
+    }
+    return array('stop_fehl', $aus);
+}
+
+/**
+ * Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter, Vorlage und Baustein-Liste) mit dem
+ * Platzhalter der Linie (Entwurf pw E4, Bauart ev_bb_liste()): die Stammfassung schreibt fuer die Art 'zahl' fest
+ * <v.1>; der Messwert braucht <v.2> - der Sendetakt hebt ihn alle 30 s um 0,01 an, mit <v.2> aendert sich auch der
+ * Text der Nachricht. Die Stammfassung bleibt unberuehrt. $id: das Muster {pumpe} fuer diese Pumpe ausrollen
+ * (Reiter, Vorlage); fuer die erste Pumpe gilt die Kurzform; null = Muster lassen. Je Befehl kommt 'aktion' (watt,
+ * quittieren, anforderung) dazu. Rueckgabe Liste oder null (Bruecke fehlt, Tabelle defekt).
+ */
+function pw_bb_liste($id = null)
+{
+    if (!pw_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    $l = bb_liste($z, bb_einstellungen($z));
+    $voll = pw_config(false);
+    $ids = pw_pumpe_ids($voll);
+    $erste = $ids ? $ids[0] : '';
+    $neu = array();
+    foreach ($l['befehle'] as $b) {
+        $teile = explode('/', $b['name']);
+        $b['aktion'] = end($teile);
+        if ($b['art'] === 'zahl') {
+            $b['loxone']['ein'] = preg_replace('/ <v\.1>\z/', ' <v.2>', $b['loxone']['ein']);
+        }
+        if ($id !== null) {
+            $kurz = ((string) $id === $erste);
+            if ($b['muster'] === $kurz) { continue; }      // erste Pumpe: Kurzform, sonst die Langform
+            if ($b['muster']) {
+                $kn = (string) $id;
+                $ers = function ($s) use ($kn) { return str_replace('{pumpe}', $kn, (string) $s); };
+                $b['name'] = $ers($b['name']);
+                $b['thema'] = $ers($b['thema']);
+                foreach (array('ein', 'aus') as $k) {
+                    if (isset($b['loxone'][$k])) { $b['loxone'][$k] = $ers($b['loxone'][$k]); }
+                }
+                $b['muster'] = false;
+            }
+            if (count($ids) > 1) {
+                $b['titel'] = preg_replace('/ \(MQTT\)\z/', ' - ' . pw_pumpe_name(pw_pumpe($voll, $id)) . ' (MQTT)', $b['titel']);
+            }
+        }
+        $neu[] = $b;
+    }
+    $l['befehle'] = $neu;
+    return $l;
+}
+
+/** Die drei Befehle einer Pumpe fuer die Baustein-Liste: aktion => array(Name wie im Musterprojekt, Befehl Ein,
+ *  Befehl Aus). Ohne Bruecke die Form der Stammfassung von Hand (der Reiter bleibt lesbar). */
+function pw_bb_befehle($cfg)
+{
+    $id = isset($cfg['id']) ? (string) $cfg['id'] : null;
+    $voll = pw_config(false);
+    $ids = pw_pumpe_ids($voll);
+    $zusatz = count($ids) > 1 ? ' - ' . pw_pumpe_name($cfg) : '';
+    $namen = array('watt' => 'Pumpenwächter: Messwert liefern (Watt)', 'quittieren' => 'Pumpenwächter: Sperre quittieren',
+                   'anforderung' => 'Pumpenwächter: Pumpe angefordert');
+    $l = pw_bb_liste($id);
+    $aus = array();
+    if ($l !== null) {
+        foreach ($l['befehle'] as $b) {
+            if (!isset($namen[$b['aktion']])) { continue; }
+            $aus[$b['aktion']] = array($namen[$b['aktion']] . $zusatz, $b['loxone']['ein'], $b['loxone']['aus']);
+        }
+    }
+    if (count($aus) !== 3) {
+        $erste = $ids ? $ids[0] : '';
+        $t = pw_befehle_praefix() . '/befehl/' . (($id === null || $id === $erste) ? '' : $id . '/');
+        $aus = array('watt' => array($namen['watt'] . $zusatz, 'publish ' . $t . 'watt <v.2>', ''),
+                     'quittieren' => array($namen['quittieren'] . $zusatz, 'publish ' . $t . 'quittieren 1', ''),
+                     'anforderung' => array($namen['anforderung'] . $zusatz, 'publish ' . $t . 'anforderung 1',
+                                            'publish ' . $t . 'anforderung 0'));
+    }
+    return $aus;
+}
+
+/** Vorlage "Pumpenwächter MQTT-Befehle" (bb_vorlage()): eigener Virtueller Ausgang an den UDP-Eingang des Gateways,
+ *  je Pumpe drei Befehle (Entwurf pw 3.3; bb_vorlage() schreibt Muster nur als Kommentar, deshalb rollt die Linie
+ *  sie aus). Rueckgabe array(name, inhalt) oder null. */
+function pw_befehle_vorlage()
+{
+    $l = pw_bb_liste(null);
+    if ($l === null) { return null; }
+    $alle = array();
+    $erste = '';
+    foreach (pw_pumpe_ids(pw_config(false)) as $i => $id) {
+        if ($i === 0) { $erste = $id; }
+        if (!pw_bruecke_erreichbar($id, $erste)) { continue; }
+        $li = pw_bb_liste($id);
+        if ($li === null) { return null; }
+        foreach ($li['befehle'] as $b) { $alle[] = $b; }
+    }
+    $l['befehle'] = $alle;
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-]/', '', preg_replace('/:\d+\z/', '', (string) $_SERVER['HTTP_HOST']))
+        : (gethostname() ?: 'loxberry');
+    $m = pw_mqtt_gateway_info();
+    $port = (int) $m['udpport'];
+    return array('VQ_pumpenwaechter_mqtt.xml', bb_vorlage($l, $host !== '' ? $host : 'loxberry', $port > 0 ? $port : 11884));
+}
+
+/** Zeile "Laeuft die Befehlsbruecke?" (Entwurf gemeinsam 2.11): array(1|0|2, Text ohne HTML). Gemessen wird das
+ *  Erzeugnis (zustand.json: ts, abo, Zaehler) und ob ein Dienst argumentweise laeuft - wie der Waechter. Aus (Haken)
+ *  ist ein Strich, kein Kreuz. */
+function pw_pruef_bruecke()
+{
+    if (!pw_bruecke_laden()) { return array(0, pw_t('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(0, sprintf(pw_t('BEFEHL.P_DEFEKT'), $fehler)); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array(0, sprintf(pw_t('BEFEHL.P_DEFEKT'), $f[0])); }
+    $c = pw_config(false);
+    if (empty($c['befehle_mqtt_ein'])) { return array(2, pw_t('BEFEHL.P_AUS')); }
+    if (empty($c['mqtt_ein'])) { return array(2, pw_t('BEFEHL.P_MQTT_AUS')); }
+    if (!bb_praefix_gueltig(pw_befehle_praefix())) {
+        return array(0, sprintf(pw_t('BEFEHL.P_PRAEFIX'), pw_befehle_praefix()));
+    }
+    if (!bb_pfade()) { return array(2, pw_t('BEFEHL.P_ARCHIV')); }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) { return array(0, pw_t('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) { return array(0, sprintf(pw_t('BEFEHL.P_HAENGT'), (int) $alter)); }
+    if (empty($zu['abo'])) {
+        return array(0, sprintf(pw_t('BEFEHL.P_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : ''));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $t = sprintf(pw_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(pw_t('BEFEHL.P_LETZTER'), (string) $zu['letzter']['name'],
+                            (string) $zu['letzter']['ergebnis'], max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . pw_t('BEFEHL.P_VERWORFEN'); }
+    return array(1, $t);
+}
+
+/** Die Zeilen von "befehlsbruecke.php --pruefen" (bb_pruefen()) als eine Pruefzeile: array(1|0|2, Text). */
+function pw_pruef_bruecke_einrichtung()
+{
+    if (!pw_bruecke_laden()) { return array(2, pw_t('BEFEHL.P_FEHLT')); }
+    ob_start();
+    bb_pruefen();
+    $aus = array_values(array_filter(explode("\n", (string) ob_get_clean()), 'strlen'));
+    if (!$aus) { return array(2, '-'); }
+    $fehl = preg_grep('/^\[FEHL\]/', $aus);
+    return array($fehl ? 0 : 1, implode(' | ', $fehl ? $fehl : array($aus[0], end($aus))));
 }

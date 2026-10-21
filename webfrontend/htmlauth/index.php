@@ -104,7 +104,7 @@ function pw_eingaben_sammeln($form, array $falsch, $pid)
         'settings' => array('sperren_ein', 'sperre_trockenlauf', 'sperre_dauerlauf', 'sperre_schaltspiel',
                             'sperre_ueberlast', 'sperre_kein_anlauf', 'sperre_ruht', 'quittung_noetig',
                             'signal_ein', 'signal_dringend'),
-        'mqtt'     => array('mqtt_ein'),
+        'mqtt'     => array('mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern'),
         'test'     => array());
     $e = array('form' => $form, 'pumpe' => (string) $pid, 'falsch' => array_values(array_unique($falsch)),
                'werte' => array(), 'haken' => array());
@@ -294,8 +294,11 @@ $pw_testausgabe = '';
 
 /* ---------- Loxone-Vorlagen herunterladen (Hausstandard) ---------- */
 if ($pw_ist_post && isset($_POST['vorlage'])) {
-    $pw_art = in_array((string) $_POST['vorlage'], array('vi', 'vihttp', 'vo'), true)
-              ? (string) $_POST['vorlage'] : 'vi';
+    /* Gruppe 5 / MQTT (1.0.14, Entwurf pw 2.6): die Vorlage der Eingaenge fuer den MQTT-Weg (vi, localhost-Kunstgriff)
+     * bietet die Oberflaeche nicht mehr an (Gruppe 1 Nachtrag 2); es bleiben die beiden HTTP-Vorlagen fuer bestehende
+     * Anlagen. Eine unbekannte Art ergibt die HTTP-Vorlage der Eingaenge. */
+    $pw_art = in_array((string) $_POST['vorlage'], array('vihttp', 'vo'), true)
+              ? (string) $_POST['vorlage'] : 'vihttp';
     /* vi und vo tragen ALLE Pumpen - sie bekommen deshalb die volle Form.
      * vihttp kann es nicht (eine Abfrageadresse je Datei) und bekommt die
      * flache Sicht der gewaehlten Pumpe. */
@@ -305,6 +308,22 @@ if ($pw_ist_post && isset($_POST['vorlage'])) {
     header('Content-Disposition: attachment; filename="' . $pw_vname . '"');
     echo $pw_vinhalt;
     exit;
+}
+
+/* ---------- Vorlage der MQTT-Befehle (Gruppe 5 / MQTT, 1.0.14) ----------
+ * Eigener Ausgang "Pumpenwächter MQTT-Befehle" aus der Tabelle der Befehlsbruecke, je Pumpe drei Befehle
+ * (bb_vorlage(), pw_befehle_vorlage()). Liest nur. */
+if ($pw_ist_post && isset($_POST['vorlage_bb'])) {
+    $pw_bv = pw_befehle_vorlage();
+    if (is_array($pw_bv)) {
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="' . $pw_bv[0] . '"');
+        header('Content-Length: ' . strlen($pw_bv[1]));
+        echo $pw_bv[1];
+        exit;
+    }
+    $pw_fehler[] = pw_t('BEFEHL.FEHLER_VORLAGE');
+    $pw_tab = 'tab-loxone';
 }
 
 /* ---------------- Einstellungen sichern ----------------
@@ -560,6 +579,9 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
     $pw_voll = pw_config();
     $pw_neu = pw_pumpe($pw_voll, $pw_pid);
     $pw_neu['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    /* Gruppe 5 / MQTT (1.0.14): die beiden Haken der Befehlsbruecke (ab Werk aus; global, gelten fuer alle Pumpen). */
+    $pw_neu['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    $pw_neu['befehle_mqtt_steuern'] = isset($_POST['befehle_mqtt_steuern']) ? 1 : 0;
     /* Geprueft wird ueber DIESELBE Positivliste wie im Einstellungs-
      * Handler und in der Sicherung - eine zweite Wahrheit ueber zulaessige
      * Werte gibt es nicht (pw_grenzen).
@@ -623,6 +645,14 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
                     $pw_meldungen[] = sprintf(pw_t('MQTT.VOLL_GESENDET'), pw_e($pw_neu_praefix), (int) $pw_nv, (int) $pw_nf);
                 }
             }
+            /* Gruppe 5 / MQTT (1.0.14): die Befehlsbruecke sofort schalten - der Waechter im Minutentakt startet
+             * nach einem Start hoechstens alle 600 s neu (Stammfassung). Auch nach einem Praefixwechsel der ersten
+             * Pumpe zieht die Bruecke ihr Abo selbst nach; der Direktstart verkuerzt nur. */
+            list($pw_bart, $pw_baus) = pw_bruecke_schalten();
+            if ($pw_bart === 'ein') { $pw_meldungen[] = pw_e(pw_t('BEFEHL.M_EIN')); }
+            elseif ($pw_bart === 'aus') { $pw_meldungen[] = pw_e(pw_t('BEFEHL.M_AUS')); }
+            elseif ($pw_bart === 'start_fehl') { $pw_fehler[] = sprintf(pw_e(pw_t('BEFEHL.M_START_FEHL')), pw_e($pw_baus)); }
+            elseif ($pw_bart === 'stop_fehl') { $pw_fehler[] = sprintf(pw_e(pw_t('BEFEHL.M_STOP_FEHL')), pw_e($pw_baus)); }
         } else {
             $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
         }
@@ -946,6 +976,9 @@ if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL') . ' ' . pw_fassung(), 'https
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 5 / MQTT (1.0.14): Kopierknopf der Namenstabelle, zugeklappter HTTP-Weg. */
+button.sm-kopie { font-size: 0.8em; padding: 1px 6px; margin-left: 4px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; color: #333; cursor: pointer; }
+details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8px 0 6px; }
 </style>
 <div class="sm-wrap">
 <h1 style="font-size:1.4em;margin:10px 0 0;"><?= pw_e(pw_t('ALLG.TITEL')) ?> <span style="font-size:0.62em;color:#777;font-weight:400;"><?= pw_e(pw_fassung()) ?></span></h1>
@@ -1284,6 +1317,30 @@ if ($pw_sich_mangel) { ?>
     <?= pw_e(pw_t('MQTT.L_EIN')) ?>
   </label>
 </div>
+<?php /* Gruppe 5 / MQTT (1.0.14, Entwurf pw 3.3): die beiden Haken der Befehlsbruecke, ab Werk aus; sie gelten fuer
+   alle Pumpen. Der Kasten warnt, wenn eine Pumpe ihren Messwert ueber Loxone bekommt und der erste Haken fehlt. */
+$pw_mloxone = false;
+foreach ($pw_alle_ids as $pw_mi) { if ((string) pw_pumpe($pw_voll, $pw_mi)['quelle'] !== 'mqtt') { $pw_mloxone = true; } } ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1" <?= pw_fh('mqtt', 'befehle_mqtt_ein', !empty($pw_cfg['befehle_mqtt_ein'])) ? 'checked' : '' ?>>
+    <?= pw_e(pw_t('BEFEHL.HAKEN_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= pw_t('BEFEHL.HAKEN_HILFE') ?></div>
+<?php if (empty($pw_cfg['mqtt_ein'])) { ?>
+  <div class="sm-hilfe"><?= pw_t('BEFEHL.HAKEN_MQTT_AUS') ?></div>
+<?php } ?>
+<?php if ($pw_mloxone && empty($pw_cfg['befehle_mqtt_ein'])) { ?>
+  <div class="sm-warnung"><?= pw_t('BEFEHL.W_LOXONE_OHNE_HAKEN') ?></div>
+<?php } ?>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_steuern" value="1" <?= pw_fh('mqtt', 'befehle_mqtt_steuern', !empty($pw_cfg['befehle_mqtt_steuern'])) ? 'checked' : '' ?>>
+    <?= pw_e(pw_t('BEFEHL.HAKEN_STEUERN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= pw_t('BEFEHL.HAKEN_STEUERN_HILFE') ?></div>
+</div>
 <div class="sm-feld">
   <label><?= pw_e(pw_t('MQTT.L_TOPIC')) ?></label>
   <input data-role="none" type="text" name="mqtt_topic" value="<?= pw_e(pw_fw('mqtt', 'mqtt_topic', $pw_cfg['mqtt_topic'])) ?>"<?= pw_fk('mqtt', 'mqtt_topic') ?> placeholder="pumpe">
@@ -1321,6 +1378,9 @@ if ($pw_sich_mangel) { ?>
 <?php foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_mk => $pw_mr): ?>
 <tr><td class="sm-mono"><?= pw_e($pw_topic . '/' . $pw_mk) ?></td><td><?= pw_e($pw_mr['einheit']) ?></td><td><?= in_array($pw_mk, pw_retain_liste(), true) ? pw_t('WORT.JA') : pw_t('WORT.NEIN') ?></td><td><?= pw_t($pw_mr['bed']) ?></td></tr>
 <?php endforeach; ?>
+<?php /* Gruppe 5 / MQTT (1.0.14): das Lebenszeichen der Befehlsbruecke (bb_status_senden(), nie retained) - unter dem
+   Praefix der ERSTEN Pumpe. */ ?>
+<tr><td class="sm-mono"><?= pw_e(pw_befehle_praefix()) ?>/status/befehle</td><td>&lt;v.0&gt;</td><td><?= pw_t('WORT.NEIN') ?></td><td><?= pw_t('BEFEHL.TH_STATUS') ?></td></tr>
 </table>
 </div>
 <?php /* Die Spalte Retain wird nicht behauptet, sondern aus DERSELBEN
@@ -1339,86 +1399,112 @@ if ($pw_sich_mangel) { ?>
     '<b>' . pw_e(pw_pumpe_name($pw_cfg)) . '</b>') ?></div>
 <?php endif; ?>
 
+<?php /* Gruppe 5 / MQTT (1.0.14; Entwurf pw 2.5 und 3.3, Bauvorschrift Gruppe 1 Nachtrag 2): MQTT ist der Weg des
+   LoxBerry-Plugins Musterprojekts, fuer Werte UND Befehle. Schritt 1 das Gateway nach seiner Fassung (V1: Abo-Zeile;
+   V2 und "nicht feststellbar": Hakenliste aus pw_mqtt_hakenliste(), laeuft/befund/sperre mit "Noncached"), Schritt 2
+   die Namenstabelle (KEINE Importvorlage fuer Werte mehr), Schritt 3 die Befehle aus der Befehlsbruecke (pw_bb_liste(),
+   EINE Quelle mit der Vorlage "Pumpenwächter MQTT-Befehle"), Schritt 4 die Ausfallerkennung in beiden Richtungen,
+   Schritt 5 die Musterseiten, Schritt 6 die Gegenprobe. Der Weg ueber HTTP (bis 1.0.13 die Schritte 1, 4, 5 und die
+   Vorlagen) steht darunter, zugeklappt. Alle Namen aus pw_mqtt_namen() bzw. pw_eingangsname(). */
+$pw_gnamen = pw_mqtt_namen($pw_cfg);
+$pw_ghaken = pw_mqtt_hakenliste($pw_cfg);
+$pw_gerste = $pw_alle_ids ? $pw_alle_ids[0] : '';
+$pw_gbef = pw_bruecke_erreichbar($pw_pid, $pw_gerste) ? pw_bb_liste($pw_pid) : null; ?>
 <div class="sm-step"><b><?= pw_t('LOX.S0_TITEL') ?></b><br><br>
 <?= pw_t('LOX.S0_TEXT') ?>
 </div>
 
-<div class="sm-step"><b><?= pw_t('LOX.S1_TITEL') ?></b><br><br>
-<?= pw_t('LOX.S1_TEXT') ?>
-<pre class="sm-pre"><?= $pw_endpunkt ?>&amp;aktion=wert&amp;watt=&lt;v&gt;</pre>
-<?= pw_t('LOX.S1_TAKT') ?>
-</div>
-
-<div class="sm-step"><b><?= pw_abo_titel() ?></b><br><br>
+<div class="sm-step"><b><?= sprintf(pw_e(pw_t('LOX.M_S1_TITEL')), pw_abo_titel()) ?></b><br><br>
+<?php if ($pw_abolage !== 'v2') { /* V1 oder nicht feststellbar: das Abo (pw_abo_text(), wie im Reiter MQTT) */ ?>
 <?= pw_abo_text() ?>
-<?php if ($pw_abolage !== 'v2') { ?>
 <pre class="sm-pre"><?= pw_e($pw_topic) ?>/#</pre>
+<p class="sm-hilfe"><?= pw_t('LOX.M_V1_BEFEHLE') ?></p>
+<?php } ?>
+<?php if ($pw_abolage !== 'v1') { /* V2 oder nicht feststellbar: die Hakenliste, aufgeklappt */ ?>
+<div class="sm-hinweis"><?= sprintf(pw_t('LOX.M_S1_V2'), '<span class="sm-mono">' . pw_e($pw_topic) . '</span>', count($pw_ghaken)) ?></div>
+<details open><summary><?= pw_e(sprintf(pw_t('LOX.M_HAKEN_AUF'), count($pw_ghaken))) ?></summary>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= pw_e(pw_t('LOX.M_T_THEMA')) ?></th><th><?= pw_e(pw_t('LOX.M_T_NAME')) ?></th><th style="width:12%"><?= pw_e(pw_t('LOX.M_T_NONCACHED')) ?></th><th><?= pw_e(pw_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($pw_ghaken as $pw_hi => $pw_hz) { ?>
+<tr><td><?= (int) $pw_hi + 1 ?></td><td><span class="sm-mono"><?= pw_e($pw_hz[0]) ?></span></td><td><span class="sm-mono"><?= pw_e($pw_hz[1]) ?></span></td><td><?= pw_e(pw_t($pw_hz[3] ? 'WORT.JA' : 'WORT.NEIN')) ?></td><td><?= pw_t($pw_hz[2]) ?></td></tr>
+<?php } ?>
+</table></div>
+</details>
+<p class="sm-hilfe"><?= pw_t('LOX.M_NONCACHED') ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?= pw_t('LOX.M_RECONNECT') ?></p>
+<?php if (empty($pw_cfg['mqtt_ein'])) { ?>
+<div class="sm-warnung"><?= pw_t('LOX.M_MQTT_AUS') ?></div>
 <?php } ?>
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S3_TITEL') ?></b><br><br>
-<?= str_replace('%TOPIC%', pw_e($pw_topic), pw_t('LOX.S3_TEXT')) ?>
-<div class="sm-breit">
-<table class="sm-tbl">
-<tr><th><?= pw_t('LOX.SP_TITEL') ?></th><th style="width:14%"><?= pw_t('LOX.SP_EINHEIT') ?></th><th style="width:44%"><?= pw_t('LOX.SP_BEDEUTUNG') ?></th></tr>
-<?php
-/* Die Tabelle kommt aus DERSELBEN Quelle wie die Vorlage und wie das, was
- * ueber MQTT hinausgeht - pw_felderliste(). Bis 0.9.7 stand die Liste
- * dreimal im Quelltext, obwohl der Kommentar "eine Quelle" behauptete. Ein
- * zwoelftes Feld waere weder in der Vorlage noch hier erschienen. */
-foreach (array_merge(pw_felderliste(), pw_statusliste()) as $pw_fk => $pw_fr): ?>
-<tr><td class="sm-mono"><?= pw_e(pw_eingangsname($pw_topic, $pw_fk)) ?></td><td><?= pw_e($pw_fr['einheit']) ?></td><td><?= pw_t($pw_fr['bed']) ?></td></tr>
-<?php endforeach; ?>
-</table>
-</div>
+<?= pw_t('LOX.S3_TEXT') ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= pw_e(pw_t('LOX.M_T_NAME')) ?></th><th><?= pw_e(pw_t('LOX.SP_BEDEUTUNG')) ?></th><th style="width:16%"><?= pw_e(pw_t('LOX.M_T_BEREICH')) ?></th><th style="width:10%"><?= pw_e(pw_t('LOX.M_T_MUSTER')) ?></th></tr>
+<?php foreach ($pw_gnamen as $pw_ni => $pw_nz) { ?>
+<tr><td><?= (int) $pw_ni + 1 ?></td><td><span class="sm-mono"><?= pw_e($pw_nz['name']) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= pw_e($pw_nz['name']) ?>"><?= pw_e(pw_t('LOX.M_KOPIEREN')) ?></button></td><td><?= pw_t($pw_nz['bedeutung']) ?></td><td><?= pw_e($pw_nz['bereich']) ?></td><td><?= pw_e(pw_t($pw_nz['im_muster'] ? 'WORT.JA' : 'WORT.NEIN')) ?></td></tr>
+<?php } ?>
+</table></div>
 <div class="sm-hilfe"><?= pw_t('LOX.BEFUND_LEGENDE') ?></div>
 <div class="sm-hilfe"><?= pw_t('LOX.UNTERSTRICH') ?></div>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S2_DIGITAL') ?></p>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S2_FEHLWERT') ?></p>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S2_RECHTE') ?></p>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S2_MUSTER') ?></p>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S2_PRAEFIX') ?></p>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(pw_t('LOX.M_KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
 </div>
 
-<h2><?= pw_t('LOX.H_VORLAGE') ?></h2>
-<div class="sm-hinweis"><?= pw_t('LOX.H_VORLAGE_TEXT') ?></div>
-<div class="sm-warnung"><?= pw_t('LOX.H_VORLAGE_ADRESSE') ?></div>
-<?php if (count($pw_alle_ids) > 1): ?>
-<div class="sm-hinweis"><?= pw_t('LOX.VORLAGEN_MEHRERE') ?></div>
-<?php endif; ?>
+<div class="sm-step"><b><?= pw_t('LOX.M_S3_TITEL') ?></b><br><br>
+<?= sprintf(pw_t('LOX.M_S3_TEXT'), '<span class="sm-mono">' . pw_e(pw_befehle_praefix()) . '/befehl/#</span>') ?>
+<?php if ($pw_gbef === null) { ?>
+<div class="sm-warnung"><?= pw_bruecke_erreichbar($pw_pid, $pw_gerste) ? pw_t('LOX.M_S3_KEINE') : pw_t('LOX.M_S3_BINDESTRICH') ?></div>
+<?php } else { ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?= pw_e(pw_t('BEFEHL.T_BEDEUTUNG')) ?></th><th><?= pw_e(pw_t('BEFEHL.T_TITEL')) ?></th><th><?= pw_e(pw_t('BEFEHL.T_LOXONE')) ?></th><th><?= pw_e(pw_t('BEFEHL.T_EINGREIFEND')) ?></th><th><?= pw_e(pw_t('BEFEHL.T_SPERRE')) ?></th></tr>
+<?php foreach ($pw_gbef['befehle'] as $pw_bb) {
+    $pw_bl = array_values(array_filter(array($pw_bb['loxone']['ein'], $pw_bb['loxone']['aus']), 'strlen')); ?>
+<tr><td><?= pw_e(pw_t($pw_bb['kachel'])) ?></td><td><?= pw_e($pw_bb['titel']) ?></td><td><span class="sm-mono"><?= implode('<br>', array_map('pw_e', $pw_bl)) ?></span></td><td><?= pw_e(pw_t($pw_bb['eingreifend'] ? 'WORT.JA' : 'WORT.NEIN')) ?></td><td><?= (int) $pw_bb['sperre_s'] ?> s</td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= pw_e(pw_t('BEFEHL.T_QUITTUNG')) ?>: <span class="sm-mono"><?= pw_e(pw_befehle_praefix()) ?>/befehl/…/quittung</span> – <?= pw_e(pw_t('BEFEHL.Q_AUSGEFUEHRT')) ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S3_NICHTS') ?></p>
+<p class="sm-hilfe"><?= pw_t('LOX.S1_TAKT') ?></p>
+<div class="sm-warnung"><?= pw_t('LOX.M_S3_HAKEN') ?></div>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S3_V1') ?></p>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S3_MEHRERE') ?></p>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;">
   <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
-  <input data-role="none" type="hidden" name="vorlage" value="vi">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VI') ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_bb" value="1"><?= pw_e(pw_t('BEFEHL.K_VORLAGE')) ?></button>
 </form>
 </div>
-<div class="sm-hilfe"><?= pw_t('LOX.K_VORLAGE_VI_TEXT') ?></div>
-<div class="sm-knopfreihe">
-<form action="index.php" method="post" style="margin:0;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
-  <input data-role="none" type="hidden" name="vorlage" value="vo">
-  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VO') ?></button>
-</form>
-<form action="index.php" method="post" style="margin:0;">
-  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
-  <input data-role="none" type="hidden" name="vorlage" value="vihttp">
-  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VIHTTP') ?></button>
-</form>
-</div>
-<div class="sm-hilfe"><?= pw_t('LOX.K_VORLAGE_VIHTTP_TEXT') ?></div>
-
-<div class="sm-step"><b><?= pw_t('LOX.S4_TITEL') ?></b><br><br>
-<?= pw_t('LOX.S4_TEXT') ?>
-<pre class="sm-pre"><?= $pw_endpunkt ?>&amp;aktion=quittieren</pre>
-</div>
-
-<div class="sm-step"><b><?= pw_t('LOX.S5_TITEL') ?></b><br><br>
-<?= pw_t('LOX.S5_TEXT') ?>
-<pre class="sm-pre"><?= $pw_endpunkt ?>&amp;aktion=anforderung&amp;an=1
-<?= $pw_endpunkt ?>&amp;aktion=anforderung&amp;an=0</pre>
+<p class="sm-hilfe"><?= pw_t('LOX.M_S3_VORLAGE') ?></p>
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S6_TITEL') ?></b><br><br>
-<?= pw_t('LOX.S6_TEXT') ?>
+<?= sprintf(pw_t('LOX.S6_TEXT'), '<span class="sm-mono">' . pw_e(pw_eingangsname($pw_topic, 'status_zaehler')) . '</span>',
+            '<span class="sm-mono">' . pw_e(pw_eingangsname($pw_topic, 'befund')) . '</span>') ?>
 </div>
 
 <div class="sm-step"><b><?= pw_t('LOX.S7_TITEL') ?></b><br><br>
@@ -1467,6 +1553,51 @@ $pw_bl = pw_bausteinliste($pw_cfg); ?>
 <div class="sm-step"><b><?= pw_t('LOX.S8_TITEL') ?></b><br><br>
 <?= str_replace('%TOPIC%', pw_e($pw_topic), pw_t('LOX.S8_TEXT')) ?>
 </div>
+
+<?php /* Gruppe 5 / MQTT (1.0.14): der Weg ueber HTTP (bis 1.0.13 die Schritte 1, 4 und 5 und die Vorlagen dieses
+         Reiters) fuer bestehende Anlagen, zugeklappt. Inhalt wie bis 1.0.13, die Schritte ohne Nummer; die
+         Vorlage der Eingaenge fuer den MQTT-Weg (localhost-Kunstgriff) entfaellt (Gruppe 1 Nachtrag 2). */ ?>
+<details class="sm-step"><summary><b><?= pw_e(pw_t('LOX.H_HTTP')) ?></b></summary>
+<p class="sm-hilfe"><?= pw_t('LOX.HTTP_ERKLAERUNG') ?></p>
+<div class="sm-step"><b><?= pw_t('LOX.S1_TITEL') ?></b><br><br>
+<?= pw_t('LOX.S1_TEXT') ?>
+<pre class="sm-pre"><?= $pw_endpunkt ?>&amp;aktion=wert&amp;watt=&lt;v&gt;</pre>
+</div>
+
+<h3><?= pw_t('LOX.H_VORLAGE') ?></h3>
+<div class="sm-hinweis"><?= pw_t('LOX.H_VORLAGE_TEXT') ?></div>
+<div class="sm-warnung"><?= pw_t('LOX.H_VORLAGE_ADRESSE') ?></div>
+<?php if (count($pw_alle_ids) > 1): ?>
+<div class="sm-hinweis"><?= pw_t('LOX.VORLAGEN_MEHRERE') ?></div>
+<?php endif; ?>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post" style="margin:0;">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
+  <input data-role="none" type="hidden" name="vorlage" value="vo">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VO') ?></button>
+</form>
+<form action="index.php" method="post" style="margin:0;">
+  <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
+  <input data-role="none" type="hidden" name="vorlage" value="vihttp">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= pw_t('LOX.K_VORLAGE_VIHTTP') ?></button>
+</form>
+</div>
+<div class="sm-hilfe"><?= pw_t('LOX.K_VORLAGE_VIHTTP_TEXT') ?></div>
+
+<div class="sm-step"><b><?= pw_t('LOX.S4_TITEL') ?></b><br><br>
+<?= pw_t('LOX.S4_TEXT') ?>
+<pre class="sm-pre"><?= $pw_endpunkt ?>&amp;aktion=quittieren</pre>
+</div>
+
+<div class="sm-step"><b><?= pw_t('LOX.S5_TITEL') ?></b><br><br>
+<?= pw_t('LOX.S5_TEXT') ?>
+<pre class="sm-pre"><?= $pw_endpunkt ?>&amp;aktion=anforderung&amp;an=1
+<?= $pw_endpunkt ?>&amp;aktion=anforderung&amp;an=0</pre>
+</div>
+<p class="sm-hilfe"><?= pw_t('LOX.HTTP_NAMEN') ?></p>
+</details>
 </div>
 
 <!-- ================= Reiter: Bilanz ================= -->

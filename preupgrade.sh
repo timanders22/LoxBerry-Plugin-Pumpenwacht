@@ -19,10 +19,10 @@
 #
 # Bis 0.9.7 hielt dieses Skript hier einen Dienst "dienst.sh" an, den es in
 # diesem Plugin nie gab, und behauptete dazu, postinstall.sh starte ihn
-# hinterher neu. Beides war Text aus einem anderen Plugin. Der Pumpenwaechter
-# hat keinen Dauerlaeufer - er hat einen Minutentakt, und der ist in sich
-# abgeschlossen: laeuft er waehrend des Updates, schreibt er hoechstens
-# einmal und ist wieder fertig.
+# hinterher neu. Beides war Text aus einem anderen Plugin.
+# Gruppe 5 (1.0.14): der Satz "der Pumpenwaechter hat keinen Dauerlaeufer", der hier stand, stimmt seit dem
+# MQTT-Zuhoerer (bin/pw_dienst.php, Quelle MQTT) nicht mehr und seit der Befehlsbruecke (bin/befehlsbruecke.php)
+# erst recht nicht. Beide werden unten angehalten; der Minutentakt steht wegen der Marke still.
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-pumpenwacht}"
@@ -116,6 +116,14 @@ if [ -f "$DIENST" ]; then
         echo "<INFO> Der Zuhoerer liess sich nicht befragen (php fehlt oder"
         echo "<INFO> pw_lib.php ist nicht auffindbar) - es wurde nichts beendet."
     fi
+fi
+
+# ---------- Befehlsbruecke anhalten (Gruppe 5 / MQTT, 1.0.14) ----------
+# Die Marke liegt schon (oben) - der Waechter im Minutentakt startet sie bis postupgrade.sh nicht neu; es ist
+# dieselbe Marke, die befehlsbruecke.sh liest. Bis 1.0.13 gab es keine Bruecke (dann fehlt die Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
 fi
 
 # ---------- Zustand und Tagesbilanz beiseitelegen ----------
