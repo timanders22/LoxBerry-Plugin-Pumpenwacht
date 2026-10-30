@@ -10,7 +10,8 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/pw_regel.php';
-/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b; seit 1.0.15 Stamm 1.2.1
+ * mit weiteren Ausgabezielen, pw_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
@@ -921,7 +922,19 @@ function pw_config_speichern($cfg)
         if ($k === 'tts') {
             /* Nr. 36 b: ein Feld aus Einzelwerten (ansage_wert_pruefen() prueft die Werte). */
             if (!is_array($v)) { return false; }
-            foreach ($v as $tv) {
+            foreach ($v as $tk => $tv) {
+                /* Welle Mehrfach-Ziele (1.0.15): die Liste der weiteren Ziele - je Ziel ein Feld aus Einzelwerten
+                 * (geprueft hat sie ansage_ziele_pruefen() im Modul). Ohne diese Ausnahme schrieb das Speichern einen
+                 * Block mit Zielen gar nicht (gemessen mz-Probe mzd2: S1-S3, Z4 "gut" abgewiesen). */
+                if ($tk === 'ziele' && is_array($tv)) {
+                    foreach ($tv as $tz) {
+                        if (!is_array($tz)) { return false; }
+                        foreach ($tz as $tzw) {
+                            if (!pw_wert_taugt($tzw)) { return false; }
+                        }
+                    }
+                    continue;
+                }
                 if (!pw_wert_taugt($tv)) { return false; }
             }
             continue;
@@ -2870,6 +2883,7 @@ function pw_sicherung_lesen($roh)
     /* Die globalen Schluessel. */
     $anzahl = 0;
     $gesehen = array();
+    $pw_tsspaet = array();     // Welle Mehrfach-Ziele (1.0.15): tts.ziele, wenn die Sicherung die Liste nicht kannte
     foreach ($daten as $k => $w) {
         if ($k === 'pumpen') { continue; }
         if (!array_key_exists($k, $vorg_global)) {
@@ -2892,7 +2906,21 @@ function pw_sicherung_lesen($roh)
                 continue;
             }
             $tj = (isset($neu['tts']) && is_array($neu['tts'])) ? $neu['tts'] : array();
-            list($tv) = ansage_vervollstaendigen($tp + $tj);
+            /* Welle Mehrfach-Ziele (1.0.15): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
+             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und die Liste
+             * "unveraendert" nennt sie. */
+            $pw_tsneu = array('tts' => $tp);
+            $pw_tsjetzt = array('tts' => $tj);
+            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+             * heisst "keine weiteren Ziele" und wird so uebernommen. */
+            $pw_spaete = array();
+            if (is_array($pw_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
+                list($pw_tsneu['tts'], $pw_spaete) = ansage_sicherung_spaet($pw_tsneu['tts'],
+                    (isset($pw_tsjetzt['tts']) && is_array($pw_tsjetzt['tts'])) ? $pw_tsjetzt['tts'] : null);
+            }
+            foreach ($pw_spaete as $pw_sn) { $pw_tsspaet[] = $pw_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+            list($tv) = ansage_vervollstaendigen($pw_tsneu['tts'] + $tj);
             $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
             $gesehen[$k] = true;
             $anzahl++;
@@ -2990,6 +3018,7 @@ function pw_sicherung_lesen($roh)
     foreach ($vorg_global as $k => $v) {
         if (!isset($gesehen[$k])) { $unveraendert[] = $k; }
     }
+    foreach ($pw_tsspaet as $pw_sn2) { $unveraendert[] = $pw_sn2; }     // Welle Mehrfach-Ziele (1.0.15): tts.ziele
 
     return array($mangel ? null : $neu, $mangel, $anzahl, $erwartet, $unveraendert);
 }
@@ -3322,6 +3351,10 @@ function pw_selbstpruefung($cfg = null)
      * (--pruefen). Aus (Haken) ist ein Strich, kein Kreuz. */
     list($pw_nok, $pw_ntext) = pw_mqtt_namen_probe($cfg);
     $add('PRUEF.NAMEN', $pw_nok, $pw_ntext);
+    /* Nachtwelle N6 (1.0.15): stehen unter MQTT-Gateway V2 die Haken der Hakenliste dieser Pumpe mit dem richtigen
+     * Noncached? Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein Strich (2). */
+    list($pw_v2s, $pw_v2t) = pw_v2_haken_lage($cfg);
+    $add('PRUEF.V2_HAKEN', $pw_v2s, $pw_v2t);
     list($pw_bok, $pw_btext) = pw_pruef_bruecke();
     $add('PRUEF.BRUECKE', $pw_bok, $pw_btext);
     list($pw_eok, $pw_etext) = pw_pruef_bruecke_einrichtung();
@@ -5022,7 +5055,34 @@ if (!defined('PW_ANSAGE_SPERRE_S')) { define('PW_ANSAGE_SPERRE_S', 1800); }
 /** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg zu Loxone im Takt). */
 function pw_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    /* Nachtwelle N6 (1.0.15, Pflegewelle 22): dazu Sonos4Lox und, ab Modul 1.1.4, SonoX (ungemessen, kein Sonos im
+     * Haus; das Modul prueft Installation und Zone bzw. Raum). Weitere Ausgabeziele (Tabelle, 'ziele') seit 1.0.15
+     * mit Stamm 1.2.1 - pw_mit_zielen() unten; ohne Tabelle wie 1.1.4. Die Fassungspruefung schuetzt vor einer zuerst
+     * geladenen aelteren Abschrift (Modul 1.1.4, Kopf "Wer 'sonox' anbietet"). */
+    $m = array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
+    if (defined('ANSAGE_FASSUNG') && version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) { $m[] = 'sonox'; }
+    return $m;
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function pw_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1), X-2 mit flachen Schluesseln (name.N): die Felder der Tabelle heissen im
+ *  Formular name[N] (N = 2..6, ansage_ziel_feldnamen()). pw_ziele_x2_name() macht daraus name.N (Beanstandung und
+ *  Markierung), pw_ziele_x2_post() aus den gesammelten Eingaben wieder das POST der Tabelle (ziele_post). */
+function pw_ziele_x2_name($n) {
+    return is_string($n) ? (string) preg_replace('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', '$1.$2', $n) : $n;
+}
+function pw_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\.([2-9])\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
 }
 
 /** Die Anlaesse: Befundkennung => Konfigurationsschluessel. */
@@ -5501,10 +5561,13 @@ function pw_mqtt_nicht_im_muster()
 
 /** Die drei Alarmwege gehen in jedem Durchgang hinaus (pw_alarm_themen()); unter Gateway V2 stehen sie
  *  auf "Noncached" (Entwurf pw 2.4, E5; ENTSCHEIDUNGEN Gruppe 5 Punkt 4) - nach einem Neustart des
- *  Miniservers kommen sie spaetestens mit dem naechsten Minutentakt, nicht erst mit dem reconnect. */
+ *  Miniservers kommen sie spaetestens mit dem naechsten Minutentakt, nicht erst mit dem reconnect.
+ *  Seit 1.0.15 (Nachtwelle N6, Nachtrag 29.10.) dazu status/befehle, das Lebenszeichen der Befehlsbruecke:
+ *  V2 reicht einen gleichbleibenden Wert sonst nach einem Neustart des Miniservers nicht neu weiter. EINE
+ *  Quelle fuer Namenstabelle, Hakenliste (Spalte Noncached) und Selbsttest. */
 function pw_mqtt_noncached()
 {
-    return pw_alarm_themen();
+    return array_merge(pw_alarm_themen(), array('status/befehle'));
 }
 
 /** Der Bereich einer Zeile der Felderliste fuer die Namenstabelle: "-1 … 1", "0 … 86400 s". */
@@ -5540,13 +5603,15 @@ function pw_mqtt_namen($cfg = null, $praefix = null)
     if ($bp === $praefix) {
         $aus[] = array('thema' => 'status/befehle', 'name' => pw_eingangsname($praefix, 'status/befehle'),
                        'bedeutung' => 'BEFEHL.TH_STATUS', 'bereich' => '-1 … 1', 'im_muster' => false,
-                       'haken' => true, 'noncached' => false, 'retained' => false);
+                       'haken' => true, 'noncached' => in_array('status/befehle', $nc, true),
+                       'retained' => false);
     }
     return $aus;
 }
 
 /** Hakenliste fuer Gateway V2 (Entwurf pw 2.4): die 22 Zahlen der Musterseiten und status/befehle, 23
- *  Haken; laeuft, befund und sperre mit "Noncached". Je Zeile array(Thema voll, Name, Bedeutung, noncached). */
+ *  Haken; laeuft, befund, sperre und (seit 1.0.15) status/befehle mit "Noncached" (pw_mqtt_noncached()).
+ *  Je Zeile array(Thema voll, Name, Bedeutung, noncached). */
 function pw_mqtt_hakenliste($cfg = null)
 {
     if ($cfg === null) { $cfg = pw_pumpe(pw_config(false)); }
@@ -5556,6 +5621,137 @@ function pw_mqtt_hakenliste($cfg = null)
         if ($z['haken']) { $aus[] = array($p . '/' . $z['thema'], $z['name'], $z['bedeutung'], $z['noncached']); }
     }
     return $aus;
+}
+
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N6, 1.0.15) ---------------- */
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos() und Govee 0.9.30
+ * gv_mqtt_v2_haken_lage(); die Datei liest pw_v2_haken_lage().
+ */
+function pw_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nicht weiter; steht es zu viel, geht
+ * jeder Wert erneut an den Miniserver.
+ */
+function pw_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: pw_mqtt_hakenliste($cfg) der Pumpe - DIESELBE Funktion wie die Hakenliste im Reiter "Einbindung in Loxone"
+ * (Regeln/07), mit ihren Textthemen (die Musterseiten haben dafuer Texteingaenge) und Noncached aus pw_mqtt_noncached().
+ */
+function pw_v2_haken_soll($cfg)
+{
+    $aus = array();
+    foreach (pw_mqtt_hakenliste($cfg) as $z) {
+        $aus[] = array('thema' => $z[0], 'name' => $z[1], 'noncached' => (bool) $z[3]);
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N6, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar). Liest nur.
+ */
+function pw_v2_haken_lage($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = pw_pumpe(pw_config(false));
+    }
+    if (empty($cfg['mqtt_ein'])) {
+        return array(2, pw_t('PRUEF.V2_AUS'));
+    }
+    $m = pw_mqtt_gateway_info();
+    $fassung = (int) $m['fassung'];
+    $home = (string) pw_paths()['home'];
+    if ($fassung === 0 || $home === '') {
+        return array(2, pw_t('PRUEF.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, pw_t('PRUEF.V2_V1'));
+    }
+    $abo = pw_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, pw_t('PRUEF.V2_UNKLAR'));
+    }
+    $liste = pw_v2_haken_soll($cfg);
+    if (!$liste) {
+        return array(2, pw_t('PRUEF.V2_LEER'));   // leere Hakenliste: kein Urteil (Hausform wie N7)
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = pw_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(pw_t('PRUEF.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(pw_t('PRUEF.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(pw_t('PRUEF.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(pw_t('PRUEF.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
 }
 
 /**

@@ -120,6 +120,17 @@ function pw_eingaben_sammeln($form, array $falsch, $pid)
             if (substr($k, -9) === '_loeschen') { $e['haken'][$k] = isset($_POST[$k]); }
             elseif (isset($_POST[$k])) { $e['werte'][$k] = $str($_POST[$k]); }
         }
+        if (pw_mit_zielen()) {
+            /* Welle Mehrfach-Ziele (1.0.15): die Tabelle kommt als name[N] (N = 2..6) und reist flach als name.N in
+             * 'werte' - nur, was gesendet wurde (ein fehlender Haken bleibt aus). */
+            foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein',
+                           'tts_ziel_loeschen') as $k) {
+                if (!isset($_POST[$k]) || !is_array($_POST[$k])) { continue; }
+                foreach ($_POST[$k] as $i => $v) {
+                    if (is_string($v) && preg_match('/^[2-6]\z/', (string) $i)) { $e['werte'][$k . '.' . $i] = $str($v); }
+                }
+            }
+        }
         foreach (pw_ansage_anlaesse() as $k) { $e['haken'][$k] = isset($_POST[$k]); }
     }
     return $e;
@@ -547,10 +558,12 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
      * Sprechtoken steht in einer Meldung, ein leeres Tokenfeld heisst "behalten". */
     $pw_tmangel = array();
     $pw_tbean = array();
+    $pw_thl = array();     // Welle Mehrfach-Ziele (1.0.15): Hinweise des Moduls, nach dem Speichern (escaped) in die Meldungen
+    $pw_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $pw_neu['tts'] = ansage_formular_lesen($_POST, pw_tts($pw_voll), $pw_tmangel, $pw_tbean,
-                                           array('modi' => pw_ansage_modi()), pw_ansage_k());
+                                           array('modi' => pw_ansage_modi(), 'ziele' => pw_mit_zielen()), pw_ansage_k(), $pw_thinw);
     foreach ($pw_tmangel as $pw_tm) { $pw_beanstandet[] = pw_e($pw_tm['text']); }
-    foreach ($pw_tbean as $pw_tb) { $pw_falsch[] = $pw_tb; }
+    foreach ($pw_tbean as $pw_tb) { $pw_falsch[] = pw_ziele_x2_name($pw_tb); }     // 1.0.15: name[N] -> name.N
     foreach (pw_ansage_anlaesse() as $pw_ak) { $pw_neu[$pw_ak] = isset($_POST[$pw_ak]) ? 1 : 0; }
     /* B4 (1.0.4): ein Quell-Filter, der die eigenen Themen trifft ('#',
      * '+/+', '<praefix>/#'), liesse den Zuhoerer sich selbst abhoeren. */
@@ -565,6 +578,8 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
         $pw_eingaben = pw_eingaben_sammeln('settings', $pw_falsch, $pw_pid);     // X-2
     } elseif (pw_config_speichern(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid))) {
         $pw_meldungen[] = pw_t('ALLG.GESPEICHERT');
+        foreach ($pw_thinw as $pw_th) { $pw_thl[] = $pw_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
+        foreach ($pw_thl as $pw_th1) { $pw_meldungen[] = pw_e($pw_th1); }
     } else {
         $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
     }
@@ -718,17 +733,26 @@ if ($pw_ist_post && isset($_POST['testwert'])) {
     }
     $pw_tab = 'tab-test';
 }
-if ($pw_ist_post && isset($_POST['ansage_test'])) {
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($pw_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     /* Nr. 36 b: die Testansage. Ins Protokoll nur die Kurzform ohne Text und Token. */
-    $pw_ak = pw_ansage_k();
-    $pw_ar = ansage_testansage(pw_tts(pw_config()), $pw_ak);
-    pw_log('Testansage: ' . ansage_kurz($pw_ar));
-    if ($pw_ar['stand'] === 1) {
-        $pw_meldungen[] = pw_e(pw_t('DURCHSAGE.M_TEST_OK'));
-    } elseif ($pw_ar['stand'] === -1) {
-        $pw_meldungen[] = sprintf(pw_e(pw_t('DURCHSAGE.M_TEST_NICHTS')), pw_e(ansage_kennung_text($pw_ar['kennung'], $pw_ak)));
+    $pw_tk = pw_ansage_k();
+    $pw_tnur = (isset($_POST['ansage_test_ziel']) && pw_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $pw_tnur === 0) {
+        $pw_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($pw_tnur >= 1) {
+        $pw_tr = ansage_testansage(pw_tts(pw_config()), $pw_tk, $pw_tnur);
     } else {
-        $pw_fehler[] = sprintf(pw_e(pw_t('DURCHSAGE.M_TEST_FEHL')), pw_e(ansage_kennung_text($pw_ar['kennung'], $pw_ak)));
+        $pw_tr = ansage_testansage(pw_tts(pw_config()), $pw_tk);
+    }
+    pw_log('Testansage' . ($pw_tnur >= 1 ? ' an Ziel ' . $pw_tnur : '') . ': ' . ansage_kurz($pw_tr));
+    if ($pw_tr['stand'] === 1) {
+        $pw_meldungen[] = pw_e(pw_t('DURCHSAGE.M_TEST_OK'));
+    } elseif ($pw_tr['stand'] === -1) {
+        $pw_meldungen[] = sprintf(pw_e(pw_t('DURCHSAGE.M_TEST_NICHTS')), pw_e(ansage_kennung_text($pw_tr['kennung'], $pw_tk)));
+    } else {
+        $pw_fehler[] = sprintf(pw_e(pw_t('DURCHSAGE.M_TEST_FEHL')), pw_e(ansage_kennung_text($pw_tr['kennung'], $pw_tk)));
     }
     $pw_tab = 'tab-test';
 }
@@ -1246,9 +1270,12 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 </div>
 <?= ansage_formular_html(pw_tts(pw_config()), array(
     'w' => function ($n, $g) { return pw_fw('settings', $n, $g); },
-    'm' => function ($n) { return pw_fk('settings', $n); },
+    'm' => function ($n) { return pw_fk('settings', pw_ziele_x2_name($n)); },     // 1.0.15: Tabelle name[N] -> name.N
     'c' => function ($n, $g) { return pw_fh('settings', $n, $g); },
-    'modi' => pw_ansage_modi()), pw_ansage_k()) ?>
+    'modi' => pw_ansage_modi(),
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => pw_mit_zielen(),
+    'ziele_post' => pw_eingabe('settings') !== null ? pw_ziele_x2_post(pw_eingabe('settings')['werte']) : null), pw_ansage_k()); ?>
 
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= pw_e(pw_t('ALLG.SPEICHERN')) ?></button>
@@ -1805,6 +1832,9 @@ foreach ($pw_zeilen as $pw_zz) {
   <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= pw_e(pw_t('DURCHSAGE.K_TEST')) ?></button>
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
+if (pw_mit_zielen()) { echo ansage_testknoepfe_html(pw_tts(pw_config()), pw_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
 </div>
 <div class="sm-hilfe"><?= pw_t('TEST.HINWEIS') ?></div>
