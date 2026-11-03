@@ -6,9 +6,21 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.15 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.16 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.16
+
+**Ab dieser Fassung sind die Sprachansagen ab Werk an, auch nach einem Update, wenn Sie die Ausgabeart nie gespeichert haben.** Eine gespeicherte Einstellung bleibt, wie sie ist, auch „aus“. **Ausschalten:** Reiter *Einstellungen*, Abschnitt Sprachausgabe, Ausgabeart **„aus“** wählen und speichern; das bleibt auch nach jedem weiteren Update aus.
+
+* **Was angesagt wird:** der Beginn eines Alarms je Pumpe: Trockenlauf, Überlast (beide dringend, also auch nachts), Dauerlauf, Schaltspiel, kein Anlauf, still, ruht; jede Art mit eigenem Haken.
+* **Wohin:** ab Werk zugleich Loxone Music Server (braucht seine Adresse), Google-Lautsprecher über Chromecast4lox (braucht dort ein Standardgerät oder hier den Namen) und Amazon Echo über Alexa-NG. Ein Ziel, das nicht bereitsteht, wird ohne Fehler übergangen; der Reiter *Test* sagt, was ihm fehlt. Das Sprechtoken der beiden Plugins müssen Sie nicht abschreiben: Es wird übernommen, in der Konfiguration gespeichert und nachgezogen; ein von Hand eingetragenes bleibt.
+* **Wann nicht:** Nachtruhe 22 bis 7 Uhr (einstellbar, wird nicht nachgeholt; Dringendes spricht trotzdem), dieselbe Ansage höchstens einmal in 30 Minuten (einstellbar) und solange Loxone das retained MQTT-Thema `haus/ansage/ruhe` auf 1 setzt (das gilt auch für Dringendes). Die Testansage im Reiter *Test* spricht immer.
+* **Der Minutenlauf wartet nicht auf Lautsprecher:** Gesprochen wird in einem eigenen Vorgang.
+* **Berichtigt:** Die Zeilen der Befehlsbrücke im Protokoll tragen das Wort „Befehlsbruecke“ nur noch einmal. Der Leser der Haus-Themen hat jetzt auch beim Lesen eines Pakets eine feste Frist.
+* Die Grenze „höchstens einmal in 30 Minuten“ gilt wie bisher, jetzt aus den gemeinsamen Regeln und einstellbar.
+
 
 ## Neu in 1.0.15
 
@@ -764,7 +776,7 @@ Der Reiter *Test* zeigt außerdem je Pumpe den **letzten Alarm** mit Beginn,
 Art und Ende. Er steht in `data/plugins/<ordner>/alarm.json` und übersteht
 ein Update wie Zähler und Tagesbilanz.
 
-## Ansage bei Alarm (ab Werk aus)
+## Ansage bei Alarm (seit 1.0.16 ab Werk an)
 
 - **Seit 1.0.7:** beginnt bei einer Pumpe ein Alarm, sagt das Plugin ihn
   über die gemeinsame Sprachausgabe an (Loxone Music Server, MusicServer4Home, eigene Adressvorlage,
@@ -772,7 +784,7 @@ ein Update wie Zähler und Tagesbilanz.
   Pumpe und Art in 30 Minuten; nie Werte im Takt. Läuft neben Loxone und SignalBot, unabhängig von beiden.
   Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner Sicherung.
 - Einstellungen im Reiter Einstellungen, Testansage und Prüfzeile im Reiter Test. In Loxone ist dafür
-  nichts anzulegen: die Ansage kommt aus dem Minutentakt des Plugins.
+  nichts anzulegen: die Ansage legt der Minutentakt hin, gesprochen wird in einem eigenen Vorgang.
 
 ## Der Endpunkt
 

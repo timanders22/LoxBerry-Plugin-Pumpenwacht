@@ -107,6 +107,12 @@ STARTLOG="REPLACELBPLOGDIR/pumpenwacht_start.log"
 # einmal geschrieben.
 CRONERR="REPLACELBPLOGDIR/cron.err"
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+# 1.0.16 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): ist die Fehlerdatei nicht schreibbar, braeche die
+# Umlenkung den Befehl ab, BEVOR er startet - bis 1.0.15 kein Lauf und keine Spur. Dann geht die Fehlerausgabe
+# nach /dev/null, und der Lauf findet statt.
+# Unter dash beendet schon ": > datei" mit gescheiterter Umlenkung die ganze Schale, also auch den Takt unten.
+( : >>"$LOG" ) 2>/dev/null || LOG=/dev/null
+( : >>"$STARTLOG" ) 2>/dev/null || STARTLOG=/dev/null
 
 # 1. Waechter. "status" gibt 0 zurueck, wenn er laeuft.
 if [ -f "REPLACELBPBINDIR/pw_dienst.php" ]; then

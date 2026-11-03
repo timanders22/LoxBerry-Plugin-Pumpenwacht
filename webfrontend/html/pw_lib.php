@@ -376,8 +376,7 @@ function pw_vorgaben()
         'signal_ordner'   => 'signalbot',
         'signal_token'    => '',
         'signal_an'       => '',
-        /* Nr. 36 b (Stufe 2): ab Werk keine Ausgabe ('aus'); die Anlaesse sind an, wirken aber erst
-         * mit einer Ausgabeart. */
+        /* Nr. 36 b (Stufe 2), seit 1.0.16 ab Werk EIN: ansage_werk_block() gilt nur fuer einen nie gespeicherten Block; die Anlaesse sind an. */
         'ansage_trockenlauf' => 1,
         'ansage_ueberlast'   => 1,
         'ansage_dauerlauf'   => 1,
@@ -385,7 +384,9 @@ function pw_vorgaben()
         'ansage_kein_anlauf' => 1,
         'ansage_still'       => 1,
         'ansage_ruht'        => 1,
-        'tts'             => ansage_vorgaben('aus'),
+        'tts'             => ansage_werk_block(),
+        'ansage_regeln'   => ansage_regeln_vorgaben(),
+        'ansage_token_herkunft' => array(),
     );
 }
 
@@ -413,7 +414,7 @@ function pw_global_schluessel()
     return array('aktionstoken', 'formgeheim', 'mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern',
                  'signal_ein', 'signal_dringend', 'signal_ordner', 'signal_token', 'signal_an',
                  /* Nr. 36 b: die Ansage gilt fuer das Plugin; der Satz nennt die Pumpe. */
-                 'tts', 'ansage_trockenlauf', 'ansage_ueberlast', 'ansage_dauerlauf', 'ansage_schaltspiel', 'ansage_kein_anlauf', 'ansage_still', 'ansage_ruht');
+                 'tts', 'ansage_regeln', 'ansage_token_herkunft', 'ansage_trockenlauf', 'ansage_ueberlast', 'ansage_dauerlauf', 'ansage_schaltspiel', 'ansage_kein_anlauf', 'ansage_still', 'ansage_ruht');
 }
 
 /** Die Werksvorgaben EINER Pumpe. */
@@ -919,6 +920,10 @@ function pw_config_speichern($cfg)
      * die Pfade, und danach lief $p['config'] ins Leere - "Undefined array
      * key config", und gespeichert wurde nichts. */
     foreach ($cfg as $k => $v) {
+        if ($k === 'ansage_regeln' || $k === 'ansage_token_herkunft') {     // 1.0.16: Felder des Stamms, geprueft beim Lesen
+            if (!is_array($v)) { return false; }
+            continue;
+        }
         if ($k === 'tts') {
             /* Nr. 36 b: ein Feld aus Einzelwerten (ansage_wert_pruefen() prueft die Werte). */
             if (!is_array($v)) { return false; }
@@ -2007,7 +2012,7 @@ function pw_felderliste()
     return array(
         'laeuft'         => array('signed' => true,  'min' => -1, 'max' => 1,          'einheit' => '<v.0>',     'bed' => 'LOX.B_LAEUFT'),
         'befund'         => array('signed' => false, 'min' => 0,  'max' => 7,          'einheit' => '<v.0>',     'bed' => 'LOX.B_BEFUND'),
-        'beiwert'        => array('signed' => true,  'min' => -1, 'max' => 86400,      'einheit' => '<v.1>',     'bed' => 'LOX.B_BEIWERT'),
+        'beiwert'        => array('signed' => true,  'min' => -1, 'max' => 2678400,    'einheit' => '<v.1>',     'bed' => 'LOX.B_BEIWERT'),
         'sperre'         => array('signed' => false, 'min' => 0,  'max' => 1,          'einheit' => '<v.0>',     'bed' => 'LOX.B_SPERRE'),
         'sperrgrund'     => array('signed' => false, 'min' => 0,  'max' => 7,          'einheit' => '<v.0>',     'bed' => 'LOX.B_SPERRGRUND'),
         'quittung'       => array('signed' => false, 'min' => 0,  'max' => 1,          'einheit' => '<v.0>',     'bed' => 'LOX.B_QUITTUNG'),
@@ -2774,6 +2779,7 @@ function pw_sicherung_bauen($cfg = null)
     unset($aus['formgeheim']);
     /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung. */
     if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }
+    unset($aus['ansage_token_herkunft']);     // 1.0.16: gehoert zu den Token, die nie in einer Sicherung stehen
     return $aus;
 }
 
@@ -2886,6 +2892,16 @@ function pw_sicherung_lesen($roh)
     $pw_tsspaet = array();     // Welle Mehrfach-Ziele (1.0.15): tts.ziele, wenn die Sicherung die Liste nicht kannte
     foreach ($daten as $k => $w) {
         if ($k === 'pumpen') { continue; }
+        if ($k === 'ansage_token_herkunft') { continue; }     // 1.0.16: nie aus einer Datei
+        if ($k === 'ansage_regeln') {     // 1.0.16: ungueltig = abgewiesen, gueltig = uebernommen
+            $pw_rg = '';
+            $pw_r = ansage_regeln_wert($w, $pw_rg);
+            if ($pw_r === null) { $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_WERT'), pw_e($pw_rg)); continue; }
+            $neu[$k] = $pw_r;
+            $gesehen[$k] = true;
+            $anzahl++;
+            continue;
+        }
         if (!array_key_exists($k, $vorg_global)) {
             $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
             continue;
@@ -4529,7 +4545,10 @@ function pw_mqtt_behalten_liste(array $themen, $leeren = false)
     };
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.0.15 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -5095,7 +5114,177 @@ function pw_ansage_anlaesse()
     return $a;
 }
 
-/** Der Block tts, vervollstaendigt (ab Werk 'aus'). */
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (1.0.16, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('PW_ANSAGE_HOECHSTALTER')) { define('PW_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function pw_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(); }
+    $g = '';
+    if (isset($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function pw_ansage_warte($fn)
+{
+    $d = pw_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function pw_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    pw_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; pw_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function pw_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(pw_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), pw_ansage_k());
+    if (!$g) { return false; }
+    $cfg = pw_config();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!pw_config_speichern($cfg)) { return false; }
+    pw_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function pw_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(); }
+    return ansage_token_fuer_lauf(pw_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), pw_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function pw_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(); }
+    $t = pw_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(pw_ansage_vor_ort($cfg), pw_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function pw_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(); }
+    $k = pw_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(pw_tts($cfg), pw_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function pw_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function pw_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = pw_config();
+    $k = pw_ansage_k();
+    $t = $tts === null ? pw_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, pw_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function pw_ansage_senden($jetzt = null)
+{
+    $d = pw_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = pw_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= PW_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = pw_config();
+        pw_ansage_token_pflegen($conf);
+        $conf = pw_config();
+        $a = ansage_regel_sprechen($frisch, pw_tts($conf), pw_ansage_regeln($conf), pw_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { pw_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            pw_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
+/** Der Block tts, vervollstaendigt (ein nie gespeicherter kommt aus den Vorgaben: ab Werk EIN). */
 function pw_tts($cfg = null)
 {
     $cfg = $cfg === null ? pw_config() : $cfg;
@@ -5120,7 +5309,8 @@ function pw_ansage_k()
         'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
         't'      => function ($s) { return pw_t($s); },
         /* K_TTS_EINTRAG: den Satz bringt das Modul seit 1.1.2 selbst mit; die Umlenkung auf
-         * DURCHSAGE.SICH_EINTRAG ist seit 1.0.9 gestrichen (X-10). Ab Werk aus - kein 'werk'. */
+         * DURCHSAGE.SICH_EINTRAG ist seit 1.0.9 gestrichen (X-10). */
+        'werk'   => ansage_werk_modus(),
     );
 }
 
@@ -5157,9 +5347,8 @@ function pw_ansage_takt($voll, $jetzt = null)
     try {
         $s = pw_json_lesen($datei);
         $alt = (isset($s['pumpen']) && is_array($s['pumpen'])) ? $s['pumpen'] : array();
-        $sperre = (isset($s['sperre']) && is_array($s['sperre'])) ? $s['sperre'] : array();
-        $tts = pw_tts($voll);
-        $k = pw_ansage_k();
+        pw_ansage_token_pflegen($voll);       // 1.0.16: schreibt nur bei einer Aenderung
+        $legen = array();
         $anl = pw_ansage_anlaesse();
         $pumpen = array();
         foreach (pw_pumpe_ids($voll) as $id) {
@@ -5175,29 +5364,13 @@ function pw_ansage_takt($voll, $jetzt = null)
             $pumpen[$id] = $akt['nr'];
             $art = $akt['art'];
             if (!isset($anl[$art]) || empty($voll[$anl[$art]])) { continue; }    // abgewaehlt
-            $schl = $id . '|' . $art;
-            $zuletzt = isset($sperre[$schl]) ? (int) $sperre[$schl] : 0;
-            if ($zuletzt > 0 && ($jetzt - $zuletzt) < PW_ANSAGE_SPERRE_S && ($jetzt - $zuletzt) >= -300) {
-                pw_log('Ansage: Alarm ' . $art . ' (' . $id . ') innerhalb von 30 min nach der letzten Ansage '
-                       . 'dieser Art - nicht angesagt (Wiederholsperre).');
-                continue;
-            }
-            $sperre[$schl] = $jetzt;
-            $r = ansage_sprechen(pw_ansage_text($art, pw_pumpe_name($p)), $tts, $k);
+            /* 1.0.16: Sperre und Nachtruhe stehen im Stamm. Trockenlauf und Ueberlast schaden der Pumpe, sie sprechen auch nachts. */
+            $legen[] = array('schluessel' => 'alarm|' . $id . '|' . $art, 'text' => pw_ansage_text($art, pw_pumpe_name($p)),
+                             'dringend' => in_array($art, array(PW_TROCKEN, PW_UEBERLAST), true));
             $n++;
-            if ($r['stand'] === 1) {
-                pw_log('Ansage: Alarm ' . $art . ' (' . $id . ') angesagt (' . ansage_kurz($r) . ').');
-            } else {
-                $fehl++;
-                pw_log('Ansage: Alarm ' . $art . ' (' . $id . ') nicht angesagt: '
-                       . ansage_kennung_text($r['kennung'], $k)
-                       . '. Der Weg nach Loxone und SignalBot sind davon nicht betroffen; es wird nicht wiederholt.');
-            }
         }
-        foreach ($sperre as $kk => $t) {
-            if (!is_string($kk) || ($jetzt - (int) $t) > 86400 || ($jetzt - (int) $t) < -86400) { unset($sperre[$kk]); }
-        }
-        if (!pw_json_schreiben($datei, array('pumpen' => $pumpen, 'sperre' => $sperre), 0600)) {
+        pw_ansage_legen($legen, $jetzt);
+        if (!pw_json_schreiben($datei, array('pumpen' => $pumpen), 0600)) {
             pw_log('WARNUNG: Der Merker fuer die Ansage liess sich nicht schreiben (' . $datei . ').');
         }
     } finally {
@@ -5212,7 +5385,7 @@ function pw_pruefe_ansage($cfg)
 {
     $k = pw_ansage_k();
     $k['e'] = function ($s) { return (string) $s; };      // die Tabelle maskiert selbst
-    list($st, $text) = ansage_pruefzeile(pw_tts($cfg), true, $k);
+    list($st, $text) = ansage_pruefzeile(pw_ansage_pruefblock($cfg), true, $k);
     return array($st === 1 ? 1 : ($st === -2 ? 2 : 0), $text);
 }
 

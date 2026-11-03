@@ -77,7 +77,8 @@ return array(
         return pw_befehle_einstellungen();
     },
     'protokoll' => function ($stufe, $text) {
-        pw_log('Befehlsbruecke ' . ($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
+        // 1.0.16: bb_log() setzt "Befehlsbruecke: " schon vor den Text - bis 1.0.15 stand es doppelt (Nachzug 01.11.2026, wie MGiSmart 1.1.30).
+        pw_log(($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
     },
     'befehle' => $pw_bef,
 );

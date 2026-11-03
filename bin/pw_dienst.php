@@ -651,7 +651,7 @@ if (!$pw_probe && pw_hat_mosquitto()) {
                           '-C', '1', '-W', '2', '-t', $pw_ot);
         $pw_obefehl = ($pw_ordner !== ''
                        ? 'XDG_CONFIG_HOME=' . escapeshellarg($pw_ordner) . ' ' : '')
-                    . implode(' ', array_map('escapeshellarg', $pw_oargv));
+                    . implode(' ', array_map('pw_shell_arg', $pw_oargv));
         $pw_oaus = @shell_exec($pw_obefehl . ' 2>/dev/null');
         if (is_string($pw_oaus) && trim($pw_oaus) !== '') {
             foreach (explode("\n", trim($pw_oaus)) as $pw_ozeile) {
@@ -672,13 +672,43 @@ if (function_exists('pcntl_signal')) {
     pcntl_signal(SIGINT, $pw_beenden);
 }
 
+/**
+ * Ein Kind beenden, ohne dass proc_close() haengen kann: SIGTERM, hoechstens $frist Sekunden warten, dann SIGKILL.
+ * Bis %FASS% stand hier SIGTERM allein. Am Geraet (MGiSmart, 01.11.2026) reagierte mosquitto_sub nicht darauf
+ * (futex_do_wait), proc_close() wartete 5 Stunden, und der Dienst stand mit.
+ */
+function pw_proc_beenden($ph, $frist = 2.0)
+{
+    $s = @proc_get_status($ph);
+    if (!is_array($s) || !$s['running']) { return; }
+    @proc_terminate($ph, 15);
+    $bis = microtime(true) + (float) $frist;
+    while (microtime(true) < $bis) {
+        usleep(50000);
+        $s = @proc_get_status($ph);
+        if (!is_array($s) || !$s['running']) { return; }
+    }
+    @proc_terminate($ph, 9);
+}
+
+/**
+ * Ein Argument fuer die Schale anfuehren, Byte fuer Byte: fuer Themen, Werte und Texte, nicht fuer Pfade.
+ * Bis 1.0.15 stand hier escapeshellarg(). Es verwirft unter PHP 7.4 jedes Byte, das im LC_CTYPE kein gueltiges Zeichen ist; Apache startet mit LANG=C, eine
+ * Befehlsbruecke ohne LANG: aus "Kueche" mit Umlaut wurde "Kche", ohne Fehler (am Geraet gemessen 01.11.2026). setlocale() fehlt, wo keine UTF-8-Locale
+ * erzeugt ist, und aendert basename() und PCRE. Einfache Anfuehrungszeichen sind fuer sh und dash byte-erhaltend; ein Nullbyte kann kein Argument tragen.
+ */
+function pw_shell_arg($s)
+{
+    return "'" . str_replace("'", "'\\''", str_replace("\0", '', (string) $s)) . "'";
+}
+
 function pw_aufraeumen()
 {
     global $pw_ph, $pw_pipes, $pw_pidfile, $pw_probe;
     foreach (array(1, 2) as $i) {
         if (isset($pw_pipes[$i]) && is_resource($pw_pipes[$i])) { @fclose($pw_pipes[$i]); }
     }
-    if (is_resource($pw_ph)) { @proc_terminate($pw_ph); @proc_close($pw_ph); }
+    if (is_resource($pw_ph)) { pw_proc_beenden($pw_ph); @proc_close($pw_ph); }
     if (!$pw_probe) { @unlink($pw_pidfile); }
 }
 register_shutdown_function('pw_aufraeumen');
