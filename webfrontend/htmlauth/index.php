@@ -8,7 +8,7 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-ini_set('display_errors', '1');
+ini_set('display_errors', '0');
 
 $pw_lbhome = getenv('LBHOMEDIR');
 if ($pw_lbhome) {

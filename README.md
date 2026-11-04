@@ -6,9 +6,13 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.17 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.18
+
+- Die Oberfläche zeigt PHP-Fehler nicht mehr im Browser an: Sie verrieten Serverpfade und hätten heruntergeladene Dateien beschädigt.
 
 ## Neu in 1.0.17
 
