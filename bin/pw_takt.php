@@ -37,7 +37,7 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-ini_set('display_errors', '1');
+ini_set('display_errors', 'stderr');     // der Cron wirft stdout weg, stderr geht ins Protokoll
 
 /* Die Bibliothek ueber eine Kandidatenliste finden - NICHT ueber eine feste
  * Zahl von ".." nach oben. Installiert liegen bin/ und webfrontend/html/ in

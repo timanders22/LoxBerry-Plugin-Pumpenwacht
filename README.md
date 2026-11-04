@@ -10,6 +10,11 @@ Version 1.0.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
 
+## Neu in 1.0.19
+
+- **PHP-Fehler von Dienst und Takt landen im Protokoll.** Sie gingen bisher nach stdout, und das wirft der Minutenlauf weg. Jetzt stehen sie im Startprotokoll des Dienstes und im Protokoll des Takts.
+- Vor einem Download wird jeder offene Ausgabepuffer geleert: PHP-Warnungen oder Reste landen nicht mehr in der heruntergeladenen Vorlage oder Sicherung.
+
 ## Neu in 1.0.18
 
 - Die Oberfläche zeigt PHP-Fehler nicht mehr im Browser an: Sie verrieten Serverpfade und hätten heruntergeladene Dateien beschädigt.

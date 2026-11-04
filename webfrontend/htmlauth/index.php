@@ -319,6 +319,7 @@ if ($pw_ist_post && isset($_POST['vorlage'])) {
      * flache Sicht der gewaehlten Pumpe. */
     list($pw_vname, $pw_vinhalt) = pw_vorlage(
         $pw_art, $pw_art === 'vihttp' ? $pw_cfg : pw_config(), null, 'pw_t');
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $pw_vname . '"');
     echo $pw_vinhalt;
@@ -331,6 +332,7 @@ if ($pw_ist_post && isset($_POST['vorlage'])) {
 if ($pw_ist_post && isset($_POST['vorlage_bb'])) {
     $pw_bv = pw_befehle_vorlage();
     if (is_array($pw_bv)) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         header('Content-Disposition: attachment; filename="' . $pw_bv[0] . '"');
         header('Content-Length: ' . strlen($pw_bv[1]));
@@ -357,6 +359,7 @@ if ($pw_ist_post && isset($_POST['pw_sichern'])) {
     $pw_js = json_encode(pw_sicherung_bauen(pw_config()),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($pw_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="pumpenwacht_einstellungen_'
                . date('Ymd_His') . '.json"');
