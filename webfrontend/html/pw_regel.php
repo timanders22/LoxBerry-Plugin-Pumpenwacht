@@ -528,7 +528,15 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
                      * Dauerlauf haengt; die Tageszahlen bekommen denselben
                      * Anteil (hoechstens eine Stunde, wie jeder Schritt),
                      * ab Mitternacht, wenn die Luecke darueber ging. */
-                    $neu['lauf_s'] = (float) $neu['luecke_lauf_s'] + min(86400.0, $jetzt - $ab);
+                    /* 1.0.20 (PW-1): nur eine KURZE Luecke zaehlt mit, bis zur halben Dauerlauf-Grenze, mindestens
+                     * stale_s. Bis 1.0.19 auch drei Stunden: 60 s Lauf, drei Stunden kein Messwert, Pumpe laeuft
+                     * zufaellig gerade wieder -> lauf_s 10740, Dauerlauf und Sperre an einer gesunden Pumpe, und der
+                     * oben abgefangene Uhrsprung kam ueber die Luecke zurueck. Was in einer langen Luecke geschah,
+                     * weiss niemand: die Laufzeit beginnt neu, der Dauerlauf braucht eine gemessene Spanne. */
+                    $pw_luecke_s = $jetzt - $ab;
+                    $pw_luecke_max = max($pw_stale_s, pw_zahl(isset($cfg['dauerlauf_s']) ? $cfg['dauerlauf_s'] : 0, 0.0) / 2.0);
+                    $neu['lauf_s'] = $pw_luecke_s <= $pw_luecke_max
+                        ? (float) $neu['luecke_lauf_s'] + min(86400.0, $pw_luecke_s) : 0.0;
                     $von = ($tagbeginn > $ab && $tagbeginn <= $jetzt) ? $tagbeginn : $ab;
                     $zu = max(0.0, min(3600.0, $jetzt - $von));
                     $neu['lauf_s_tag'] += $zu;
@@ -1167,6 +1175,25 @@ function pw_selbsttest($ausgabe = true)
     $pruef('Lauf mit Luecke: kein zusaetzlicher Start', $sd['starts_gesamt'], 1);
     $pruef('Lauf mit Luecke: laengster nie groesser als die Tageslaufzeit',
            $sd['laengster_tag'] <= $sd['lauf_s_tag'] ? 1 : 0, 1);
+    /* 1.0.20 (PW-1): eine lange Luecke ist keine Laufzeit. */
+    $cfgl = array('an_w' => 20, 'trocken_w' => 0, 'ueberlast_w' => 0, 'dauerlauf_s' => 1800, 'starts_h' => 0, 'stale_s' => 300,
+                  'sperren_ein' => 1, 'sperre_dauerlauf' => 1, 'quittung_noetig' => 1);
+    $sl1 = array(); $tl = 8000000.0;
+    $sl1 = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgl, $sl1, $tl);
+    $sl1 = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgl, $sl1, $tl + 60);
+    $sl1 = pw_schritt(array('watt' => null, 'tag' => '2026-09-01'), $cfgl, $sl1, $tl + 120);
+    $sl1 = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgl, $sl1, $tl + 10800);
+    $pruef('Lange Luecke (PW-1): 3 h zaehlen nicht als Laufzeit', $sl1['lauf_s'], 0);
+    $pruef('Lange Luecke (PW-1): kein Dauerlauf', $sl1['befund'], PW_OK);
+    for ($m = 1; $m <= 31; $m++) {
+        $sl1 = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgl, $sl1, $tl + 10800 + 60 * $m);
+    }
+    $pruef('Lange Luecke (PW-1): laeuft sie danach gemessen durch, kommt der Dauerlauf', $sl1['befund'], PW_DAUERLAUF);
+    $sl2 = array();
+    $sl2 = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgl, $sl2, $tl);
+    $sl2 = pw_schritt(array('watt' => null, 'tag' => '2026-09-01'), $cfgl, $sl2, $tl + 60);
+    $sl2 = pw_schritt(array('watt' => 300, 'tag' => '2026-09-01'), $cfgl, $sl2, $tl + 660);
+    $pruef('Kurze Luecke (PW-1): 10 min zaehlen weiter mit', $sl2['lauf_s'], 660);
 
     /* Nach einem Lauf, der in der Luecke endete, zaehlt die Ruhefrist ab dem
      * letzten gesehenen Lauf - nicht ab dem Ende der Luecke. */

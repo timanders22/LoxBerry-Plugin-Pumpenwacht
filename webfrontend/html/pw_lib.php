@@ -2832,7 +2832,7 @@ function pw_sicherung_lesen($roh)
         if (strncmp((string) $k, '_', 1) !== 0) { continue; }
         if ($k === '_plugin' && (!is_string($daten[$k]) || $daten[$k] !== 'pumpenwacht')) {
             $mangel[] = sprintf(pw_t('EINST.SICH_FREMDES_PLUGIN'),
-                                pw_e(is_scalar($daten[$k]) ? (string) $daten[$k] : gettype($daten[$k])));
+                                is_scalar($daten[$k]) ? (string) $daten[$k] : gettype($daten[$k]));
         }
         unset($daten[$k]);
     }
@@ -2850,29 +2850,29 @@ function pw_sicherung_lesen($roh)
     if (isset($daten['pumpen'])) {
         foreach (array_keys($daten) as $k) {
             if ($k === 'pumpen' || array_key_exists($k, $vorg_global)) { continue; }
-            $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
+            $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), (string) $k);
         }
         if (!is_array($daten['pumpen'])) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'pumpen', pw_e(gettype($daten['pumpen'])));
+            $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'pumpen', gettype($daten['pumpen']));
             return array(null, $mangel, 0, 0, array());
         }
         $form_mangel = false;
         foreach ($daten['pumpen'] as $i => $p) {
             if (!is_array($p)) {
-                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e('pumpen.' . $i), pw_e(gettype($p)));
+                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'pumpen.' . $i, gettype($p));
                 $form_mangel = true;
                 continue;
             }
             if (array_key_exists('id', $p) && !pw_kennung_gueltig($p['id'])) {
-                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e('pumpen.' . $i . '.id'),
-                                    pw_e(is_scalar($p['id']) ? pw_kurztext((string) $p['id'], 60) : gettype($p['id'])));
+                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'pumpen.' . $i . '.id',
+                                    is_scalar($p['id']) ? pw_kurztext((string) $p['id'], 60) : gettype($p['id']));
                 $form_mangel = true;
             }
         }
         if ($form_mangel) { return array(null, $mangel, 0, 0, array()); }
     } elseif (array_key_exists('id', $daten) && !pw_kennung_gueltig($daten['id'])) {
         $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'id',
-                            pw_e(is_scalar($daten['id']) ? pw_kurztext((string) $daten['id'], 60) : gettype($daten['id'])));
+                            is_scalar($daten['id']) ? pw_kurztext((string) $daten['id'], 60) : gettype($daten['id']));
         return array(null, $mangel, 0, 0, array());
     }
 
@@ -2896,14 +2896,14 @@ function pw_sicherung_lesen($roh)
         if ($k === 'ansage_regeln') {     // 1.0.16: ungueltig = abgewiesen, gueltig = uebernommen
             $pw_rg = '';
             $pw_r = ansage_regeln_wert($w, $pw_rg);
-            if ($pw_r === null) { $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_WERT'), pw_e($pw_rg)); continue; }
+            if ($pw_r === null) { $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_WERT'), $pw_rg); continue; }
             $neu[$k] = $pw_r;
             $gesehen[$k] = true;
             $anzahl++;
             continue;
         }
         if (!array_key_exists($k, $vorg_global)) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e((string) $k));
+            $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), (string) $k);
             continue;
         }
         if ($k === 'tts') {
@@ -2912,13 +2912,13 @@ function pw_sicherung_lesen($roh)
              * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft (Heimnetz). */
             $tm = ansage_sicherung_mangel($w);
             if ($tm) {
-                $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_TOKEN'), pw_e(implode(', ', $tm)));
+                $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_TOKEN'), implode(', ', $tm));
                 continue;
             }
             $tg = '';
             $tp = ansage_wert_pruefen($w, $tg, pw_ansage_modi());
             if ($tp === null) {
-                $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_WERT'), pw_e(ansage_kennung_text($tg, pw_ansage_k())));
+                $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_WERT'), ansage_kennung_text($tg, pw_ansage_k()));
                 continue;
             }
             $tj = (isset($neu['tts']) && is_array($neu['tts'])) ? $neu['tts'] : array();
@@ -2947,7 +2947,7 @@ function pw_sicherung_lesen($roh)
          * Liste faellt unten durch die Wertpruefung. */
         if ($k === 'aktionstoken' && is_string($w) && trim($w) === ''
             && trim((string) (isset($neu[$k]) ? $neu[$k] : '')) !== '') {
-            $mangel[] = sprintf(pw_t('EINST.SICH_LEER_GEHEIM'), pw_e($k));
+            $mangel[] = sprintf(pw_t('EINST.SICH_LEER_GEHEIM'), $k);
             continue;
         }
         /* c1: ein LEERES SignalBot-Token ueberschreibt kein gespeichertes - es
@@ -2959,8 +2959,8 @@ function pw_sicherung_lesen($roh)
         }
         list($wert, $grund) = pw_wert_pruefen($k, $w);
         if ($grund !== '') {
-            $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e($k),
-                                pw_e(is_scalar($w) ? pw_kurztext((string) $w, 60) : gettype($w)));
+            $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), $k,
+                                is_scalar($w) ? pw_kurztext((string) $w, 60) : gettype($w));
             continue;
         }
         $neu[$k] = $wert;
@@ -2984,7 +2984,7 @@ function pw_sicherung_lesen($roh)
         foreach ($p as $k => $w) {
             if ($k === 'id') { continue; }
             if (!array_key_exists($k, $vorg_pumpe)) {
-                $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), pw_e($id . '.' . $k));
+                $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), $id . '.' . $k);
                 continue;
             }
             /* O6 (1.0.4): auch der Name geht durch die Positivliste - wie im
@@ -2995,8 +2995,8 @@ function pw_sicherung_lesen($roh)
              * schreiben" abgewiesen. */
             list($wert, $grund) = pw_wert_pruefen($k, $w);
             if ($grund !== '') {
-                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), pw_e($id . '.' . $k),
-                                    pw_e(is_scalar($w) ? pw_kurztext((string) $w, 60) : gettype($w)));
+                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), $id . '.' . $k,
+                                    is_scalar($w) ? pw_kurztext((string) $w, 60) : gettype($w));
                 continue;
             }
             $ziel[$k] = $wert;
@@ -3008,12 +3008,12 @@ function pw_sicherung_lesen($roh)
         $neu['pumpen'] = $pumpen_neu;
         $doppelt = pw_praefixe_pruefen($neu);
         foreach ($doppelt as $d) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_PRAEFIX'), pw_e($d));
+            $mangel[] = sprintf(pw_t('EINST.SICH_PRAEFIX'), $d);
         }
         /* B4 (1.0.4): ein Quell-Filter, der die eigenen Themen trifft, hoerte
          * das Plugin selbst ab - Rueckkopplung (Pruefbericht mqtt B4). */
         foreach (pw_quelle_kollisionen($neu) as $d) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_ECHO'), pw_e($d));
+            $mangel[] = sprintf(pw_t('EINST.SICH_ECHO'), $d);
         }
     }
 

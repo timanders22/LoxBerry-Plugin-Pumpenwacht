@@ -116,8 +116,8 @@ function pw_eingaben_sammeln($form, array $falsch, $pid)
     }
     if ($form === 'settings') {
         /* Nr. 36 b: Felder und Anlaesse der Ansage - nie die Sprechtoken (ansage_x2_felder()). */
-        foreach (pw_ansage_regel_felder() as $k) {     // 1.0.16
-            if ($k === 'ansage_ruhe_ein') { $e['haken'][$k] = isset($_POST[$k]); }
+        foreach (array_merge(pw_ansage_regel_felder(), array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet')) as $k) {     // 1.0.16; 1.0.20: Tafel und HomePod dazu (Stamm 1.4.1)
+            if (in_array($k, array('ansage_ruhe_ein', 'ansage_tafel_ein', 'ansage_homepod_ein'), true)) { $e['haken'][$k] = isset($_POST[$k]); }
             elseif (isset($_POST[$k])) { $e['werte'][$k] = $str($_POST[$k]); }
         }
         foreach (ansage_x2_felder(array('modi' => pw_ansage_modi())) as $k) {
@@ -412,7 +412,7 @@ if ($pw_ist_post && isset($_POST['pw_zurueck'])) {
             $pw_meldungen[] = sprintf(pw_t('EINST.SICH_UEBERNOMMEN'), $pw_n, $pw_soll)
                 . ($pw_unver
                    ? ' ' . sprintf(pw_t('EINST.SICH_UNVERAENDERT'),
-                                   count($pw_unver), pw_e(implode(', ', $pw_unver)))
+                                   count($pw_unver), implode(', ', $pw_unver))
                    : '');
             pw_log(sprintf('Sicherung zurueckgespielt: %d von %d Einstellungen.',
                            $pw_n, $pw_soll));
@@ -427,13 +427,13 @@ if ($pw_ist_post && isset($_POST['pw_zurueck'])) {
 if ($pw_ist_post && isset($_POST['pumpe_neu'])) {
     $pw_neue = pw_pumpe_anlegen();
     if ($pw_neue === null) {
-        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
+        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_paths()['config']);
     } else {
         /* Auf die neue Pumpe umschalten. Wer eine anlegt, will sie
          * einrichten - und saehe sonst weiter die alte, waehrend die neue
          * unbemerkt in der Leiste steht. */
         $pw_pid = $pw_neue;
-        $pw_meldungen[] = sprintf(pw_t('PUMPE.ANGELEGT'), pw_e($pw_neue));
+        $pw_meldungen[] = sprintf(pw_t('PUMPE.ANGELEGT'), $pw_neue);
     }
     $pw_tab = 'tab-settings';
 }
@@ -445,7 +445,7 @@ if ($pw_ist_post && isset($_POST['pumpe_weg'])) {
      * Klick in der Pumpenleiste die Pumpe samt Zustand und Tagesbilanz. */
     if (!isset($_POST['bestaetigt']) || !is_string($_POST['bestaetigt']) || $_POST['bestaetigt'] !== '1') {
         $pw_erg = 'haken';
-        $pw_fehler[] = sprintf(pw_t('PUMPE.WEG_HAKEN'), pw_e(pw_pumpe_name($pw_cfg)));
+        $pw_fehler[] = sprintf(pw_t('PUMPE.WEG_HAKEN'), pw_pumpe_name($pw_cfg));
     } else {
         $pw_weg_praefix = pw_mqtt_thema($pw_cfg);
         $pw_weg_name = pw_pumpe_name($pw_cfg);
@@ -454,7 +454,7 @@ if ($pw_ist_post && isset($_POST['pumpe_weg'])) {
     if ($pw_erg === 'haken') {
         /* nichts geaendert */
     } elseif ($pw_erg === true) {
-        $pw_meldungen[] = sprintf(pw_t('PUMPE.ENTFERNT'), pw_e($pw_weg_name));
+        $pw_meldungen[] = sprintf(pw_t('PUMPE.ENTFERNT'), $pw_weg_name);
         /* B9 (1.0.4): ihre retained Themen gehen mit - sonst stuende der
          * letzte Befund der entfernten Pumpe fuer immer im Broker. Nur,
          * wenn keine andere Pumpe dasselbe Praefix traegt. */
@@ -469,7 +469,7 @@ if ($pw_ist_post && isset($_POST['pumpe_weg'])) {
     } elseif ($pw_erg === 'letzte') {
         $pw_fehler[] = pw_t('PUMPE.LETZTE');
     } else {
-        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
+        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_paths()['config']);
     }
     $pw_tab = 'tab-settings';
 }
@@ -572,14 +572,16 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
     /* 1.0.16: Wann gesprochen wird (Stamm). */
     $pw_rana = array();
     list($pw_neu['ansage_regeln']) = ansage_regeln_formular($_POST, pw_ansage_regeln($pw_voll), array(), $pw_tmangel, $pw_tbean, pw_ansage_k());
-    foreach ($pw_tmangel as $pw_tm) { $pw_beanstandet[] = pw_e($pw_tm['text']); }
+    // 1.0.20: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.0.19 ueberschrieb es der naechste Abgleich.
+    $pw_neu['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($pw_voll['ansage_token_herkunft']) ? $pw_voll['ansage_token_herkunft'] : array());
+    foreach ($pw_tmangel as $pw_tm) { $pw_beanstandet[] = (string) $pw_tm['text']; }
     foreach ($pw_tbean as $pw_tb) { $pw_falsch[] = pw_ziele_x2_name($pw_tb); }     // 1.0.15: name[N] -> name.N
     foreach (pw_ansage_anlaesse() as $pw_ak) { $pw_neu[$pw_ak] = isset($_POST[$pw_ak]) ? 1 : 0; }
     /* B4 (1.0.4): ein Quell-Filter, der die eigenen Themen trifft ('#',
      * '+/+', '<praefix>/#'), liesse den Zuhoerer sich selbst abhoeren. */
     if (!$pw_beanstandet) {
         foreach (pw_quelle_kollisionen(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid)) as $pw_k) {
-            $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_ECHO'), pw_e($pw_k));
+            $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_ECHO'), $pw_k);
             $pw_falsch[] = 'quelle_topic';
         }
     }
@@ -589,9 +591,9 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
     } elseif (pw_config_speichern(pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid))) {
         $pw_meldungen[] = pw_t('ALLG.GESPEICHERT');
         foreach ($pw_thinw as $pw_th) { $pw_thl[] = $pw_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
-        foreach ($pw_thl as $pw_th1) { $pw_meldungen[] = pw_e($pw_th1); }
+        foreach ($pw_thl as $pw_th1) { $pw_meldungen[] = $pw_th1; }
     } else {
-        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
+        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_paths()['config']);
     }
     $pw_tab = 'tab-settings';
 }
@@ -642,7 +644,7 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
         $pw_neu_voll = pw_pumpe_zurueck($pw_voll, $pw_neu, $pw_pid);
         $pw_kol = pw_quelle_kollisionen($pw_neu_voll);
         if ($pw_kol) {
-            foreach ($pw_kol as $pw_k) { $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_ECHO'), pw_e($pw_k)); }
+            foreach ($pw_kol as $pw_k) { $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_ECHO'), $pw_k); }
             $pw_eingaben = pw_eingaben_sammeln('mqtt', array('mqtt_topic'), $pw_pid);     // X-2
         } elseif (pw_config_speichern($pw_neu_voll)) {
             $pw_meldungen[] = pw_t('ALLG.GESPEICHERT');
@@ -667,19 +669,19 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
                 $pw_vp = pw_pumpe(pw_config(), $pw_pid);
                 list($pw_nv, $pw_nf, $pw_ng) = pw_mqtt_publish(pw_felder(pw_stand($pw_pid), $pw_vp), $pw_vp);
                 if ($pw_ng !== null) {
-                    $pw_meldungen[] = sprintf(pw_t('MQTT.VOLL_GESENDET'), pw_e($pw_neu_praefix), (int) $pw_nv, (int) $pw_nf);
+                    $pw_meldungen[] = sprintf(pw_t('MQTT.VOLL_GESENDET'), $pw_neu_praefix, (int) $pw_nv, (int) $pw_nf);
                 }
             }
             /* Gruppe 5 / MQTT (1.0.14): die Befehlsbruecke sofort schalten - der Waechter im Minutentakt startet
              * nach einem Start hoechstens alle 600 s neu (Stammfassung). Auch nach einem Praefixwechsel der ersten
              * Pumpe zieht die Bruecke ihr Abo selbst nach; der Direktstart verkuerzt nur. */
             list($pw_bart, $pw_baus) = pw_bruecke_schalten();
-            if ($pw_bart === 'ein') { $pw_meldungen[] = pw_e(pw_t('BEFEHL.M_EIN')); }
-            elseif ($pw_bart === 'aus') { $pw_meldungen[] = pw_e(pw_t('BEFEHL.M_AUS')); }
-            elseif ($pw_bart === 'start_fehl') { $pw_fehler[] = sprintf(pw_e(pw_t('BEFEHL.M_START_FEHL')), pw_e($pw_baus)); }
-            elseif ($pw_bart === 'stop_fehl') { $pw_fehler[] = sprintf(pw_e(pw_t('BEFEHL.M_STOP_FEHL')), pw_e($pw_baus)); }
+            if ($pw_bart === 'ein') { $pw_meldungen[] = pw_t('BEFEHL.M_EIN'); }
+            elseif ($pw_bart === 'aus') { $pw_meldungen[] = pw_t('BEFEHL.M_AUS'); }
+            elseif ($pw_bart === 'start_fehl') { $pw_fehler[] = sprintf(pw_t('BEFEHL.M_START_FEHL'), $pw_baus); }
+            elseif ($pw_bart === 'stop_fehl') { $pw_fehler[] = sprintf(pw_t('BEFEHL.M_STOP_FEHL'), $pw_baus); }
         } else {
-            $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
+            $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_paths()['config']);
         }
     }
     $pw_tab = 'tab-mqtt';
@@ -702,7 +704,7 @@ if ($pw_ist_post && isset($_POST['pw_token_neu'])) {
         pw_log('Neues Aktionstoken erzeugt - die bisherigen Adressen in Loxone wirken nicht mehr.');
         $pw_meldungen[] = pw_t('EINST.TOKEN_NEU_ERZEUGT');
     } else {
-        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_e(pw_paths()['config']));
+        $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_SPEICHERN'), pw_paths()['config']);
     }
     $pw_tab = 'tab-settings';
 }
@@ -736,8 +738,8 @@ if ($pw_ist_post && isset($_POST['testwert'])) {
             /* Der Befund UEBERSETZT. Bis 0.9.7 stand hier die Kennung
              * "trockenlauf" statt "Trockenlauf" - ueberall sonst ging sie
              * durch pw_t(). */
-            $pw_meldungen[] = sprintf(pw_t('TEST.WERT_OK'), pw_e($pw_roh),
-                pw_e(pw_t(isset($pw_schl[$pw_bz]) ? $pw_schl[$pw_bz] : 'BEFUND.STILL')),
+            $pw_meldungen[] = sprintf(pw_t('TEST.WERT_OK'), $pw_roh,
+                pw_t(isset($pw_schl[$pw_bz]) ? $pw_schl[$pw_bz] : 'BEFUND.STILL'),
                 (int) $pw_v, (int) $pw_fl);
         }
     }
@@ -758,11 +760,11 @@ if ($pw_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_z
     }
     pw_log('Testansage' . ($pw_tnur >= 1 ? ' an Ziel ' . $pw_tnur : '') . ': ' . ansage_kurz($pw_tr));
     if ($pw_tr['stand'] === 1) {
-        $pw_meldungen[] = pw_e(pw_t('DURCHSAGE.M_TEST_OK'));
+        $pw_meldungen[] = pw_t('DURCHSAGE.M_TEST_OK');
     } elseif ($pw_tr['stand'] === -1) {
-        $pw_meldungen[] = sprintf(pw_e(pw_t('DURCHSAGE.M_TEST_NICHTS')), pw_e(ansage_kennung_text($pw_tr['kennung'], $pw_tk)));
+        $pw_meldungen[] = sprintf(pw_t('DURCHSAGE.M_TEST_NICHTS'), ansage_kennung_text($pw_tr['kennung'], $pw_tk));
     } else {
-        $pw_fehler[] = sprintf(pw_e(pw_t('DURCHSAGE.M_TEST_FEHL')), pw_e(ansage_kennung_text($pw_tr['kennung'], $pw_tk)));
+        $pw_fehler[] = sprintf(pw_t('DURCHSAGE.M_TEST_FEHL'), ansage_kennung_text($pw_tr['kennung'], $pw_tk));
     }
     $pw_tab = 'tab-test';
 }
@@ -794,7 +796,7 @@ if ($pw_ist_post && isset($_POST['log_leeren'])) {
     if ($pw_lr === strlen($pw_lz)) {
         $pw_meldungen[] = pw_t('LOG.GELEERT');
     } else {
-        $pw_fehler[] = sprintf(pw_t('LOG.FEHLER_LEEREN'), pw_e(pw_paths()['log']));
+        $pw_fehler[] = sprintf(pw_t('LOG.FEHLER_LEEREN'), pw_paths()['log']);
     }
     $pw_tab = 'tab-log';
 }
@@ -1019,7 +1021,8 @@ details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8
 
 <?php if (pw_sprache_fehlt()) { ?><div class="sm-warnung"><?= pw_sprache_notfall() ?></div><?php } ?>
 <?php /* Die Meldungen kommen seit 1.0.4 aus der Einmalmeldung und sind
-   Klartext - deshalb maskiert (Regeln/04). */ ?>
+   Klartext - deshalb maskiert (Regeln/04). 1.0.20 (K5): gesammelt wird jetzt wirklich Klartext; vorher
+   standen &#039; und &amp; auf dem Bildschirm. */ ?>
 <?php foreach ($pw_meldungen as $pw_z) { ?><div class="sm-hinweis"><?= pw_e($pw_z) ?></div><?php } ?>
 <?php if ($pw_fehler) { ?><div class="sm-warnung"><b><?= pw_t('ALLG.FEHLER') ?></b><ul style="margin:6px 0 0 18px;padding:0;"><?php
     foreach ($pw_fehler as $pw_z) { echo '<li>' . pw_e($pw_z) . '</li>'; } ?></ul></div><?php } ?>
@@ -1304,13 +1307,12 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 /* X-3 (Verbesserungsbau 30.09.2026): besteht die eigene Sicherung das eigene
  * Zurueckspielen? Dieselbe Pruefung wie beim Zurueckspielen
  * (pw_sicherung_selbstpruefung()). Eine Warnung - der Knopf liefert die
- * Datei trotzdem. Die Beanstandungen kommen aus pw_sicherung_lesen() mit
- * maskierten Teilen; sie werden wie im Rueckspielweg erst entschluesselt
- * und dann EINMAL maskiert ausgegeben. */
+ * Datei trotzdem. Die Beanstandungen aus pw_sicherung_lesen() sind seit 1.0.20
+ * (K5) Klartext und werden hier EINMAL maskiert. */
 $pw_sich_mangel = pw_sicherung_selbstpruefung();
 if ($pw_sich_mangel) { ?>
 <div class="sm-warnung"><b><?= pw_e(pw_t('EINST.SICH_SELBST_WARN')) ?></b><ul style="margin:6px 0 0 18px;padding:0;"><?php
-    foreach ($pw_sich_mangel as $pw_z) { echo '<li>' . pw_e(html_entity_decode(strip_tags((string) $pw_z), ENT_QUOTES, 'UTF-8')) . '</li>'; } ?></ul></div>
+    foreach ($pw_sich_mangel as $pw_z) { echo '<li>' . pw_e((string) $pw_z) . '</li>'; } ?></ul></div>
 <?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft

@@ -10,6 +10,14 @@ Version 1.0.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
 
+## Neu in 1.0.20
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Messlücke:** Eine lange Lücke im Messwert zählt nicht mehr als Laufzeit und löst keinen falschen Dauerlauf mit Sperre an einer gesunden Pumpe aus; kurze Lücken zählen weiter mit.
+- **Meldungen:** Namen mit Apostroph oder `&` erscheinen in den Meldungen der Oberfläche jetzt richtig.
+- **Formular:** Ein beanstandeter Tafel- oder HomePod-Name bleibt zur Korrektur im Feld stehen.
+
 ## Neu in 1.0.19
 
 - **PHP-Fehler von Dienst und Takt landen im Protokoll.** Sie gingen bisher nach stdout, und das wirft der Minutenlauf weg. Jetzt stehen sie im Startprotokoll des Dienstes und im Protokoll des Takts.
