@@ -6,9 +6,15 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.23
+
+- **Reiter Test, Zeile SignalBot:** Ist in SignalBot (ab 0.9.30) „HTTP-Endpunkt für Loxone annehmen“ aus, steht dort jetzt ein Kreuz mit dem Grund. Bis 1.0.22 stand ein Haken („erreichbar“), weil nur der Selbsttest von SignalBot gefragt wurde – und der bleibt auch bei ausgeschaltetem Endpunkt offen, während jede Meldung mit HTTP 403 `ENDPUNKT_AUS` abgewiesen wird. Gefragt wird zusätzlich die Statuszeile von SignalBot; sie löst dort nichts aus.
+- Die Protokollzeile zu einer abgewiesenen Meldung nennt in diesem Fall den Schalter in SignalBot.
+- Am Versand und am Weg nach Loxone ändert sich nichts. Gemessen gegen den Endpunkt von SignalBot 0.9.38 unter PHP 7.4, 8.4 und 8.5; nicht am Gerät.
 
 ## Neu in 1.0.22
 

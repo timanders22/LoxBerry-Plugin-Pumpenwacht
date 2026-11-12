@@ -5510,7 +5510,8 @@ function pw_signal_grund($code, $rumpf, $fehler)
     }
     $g = preg_match('/(?:GRUND|ERR)=([A-Z_]{1,40})/', (string) $rumpf, $m) ? $m[1] : '';
     return 'HTTP ' . (int) $code . ($g !== '' ? ' ' . $g : '')
-         . ((int) $code === 404 ? ' - ' . pw_t('PRUEF.SIGNAL_404') : '');
+         . ((int) $code === 404 ? ' - ' . pw_t('PRUEF.SIGNAL_404') : '')
+         . ($g === 'ENDPUNKT_AUS' ? ' - ' . pw_t('PRUEF.SIGNAL_ENDPUNKT_HINWEIS') : '');
 }
 
 /**
@@ -5697,6 +5698,16 @@ function pw_pruefe_signal($cfg)
     list($c, $r, $f) = pw_nachbar_rufen($ordner, array('token' => $tok, 'selftest' => '1'), 3);
     if (!($c === 200 && strpos(ltrim($r), 'SELFTEST;OK=1') === 0)) {
         return array(0, sprintf(pw_t('PRUEF.SIGNAL_NICHT'), $ordner, pw_signal_grund($c, $r, $f)));
+    }
+    /* 1.0.23 (Nachtpruefung 12.11.2026): ?selftest=1 bleibt bei SignalBot ab 0.9.30 auch dann offen, wenn dort
+     * "HTTP-Endpunkt fuer Loxone annehmen" aus ist (ab Werk aus, nach einem Update an) - dann weist SignalBot
+     * jedes "senden" mit HTTP 403 GRUND=ENDPUNKT_AUS ab, und bis 1.0.22 stand hier trotzdem ein Haken (gemessen
+     * gegen den Endpunkt von SignalBot 0.9.38). Gefragt wird deshalb zusaetzlich die Statuszeile (aktion=status,
+     * abfragend, loest dort nichts aus); sie unterliegt demselben Schalter wie "senden". Nur die Abweisung
+     * ENDPUNKT_AUS wird hier beurteilt - eine aeltere Fassung ohne den Schalter antwortet wie bisher. */
+    list($c2, $r2, ) = pw_nachbar_rufen($ordner, array('token' => $tok, 'aktion' => 'status'), 3);
+    if ($c2 === 403 && strpos((string) $r2, 'GRUND=ENDPUNKT_AUS') !== false) {
+        return array(0, sprintf(pw_t('PRUEF.SIGNAL_ENDPUNKT_AUS'), $ordner));
     }
     $s = pw_json_lesen(pw_signal_datei());
     $e = (isset($s['ergebnis']) && is_array($s['ergebnis'])) ? $s['ergebnis'] : null;
