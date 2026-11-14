@@ -6,9 +6,14 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.24
+
+- **Reiter Einbindung in Loxone, Schritt 1 (MQTT-Gateway Fassung 1):** Der Hinweis zum Abo `…/#` sagte, das Gateway lege für die Befehle und ihre Quittungen Eingänge an. Das tut es nicht: Den Virtuellen Eingang legt man in Loxone Config mit genau dem Titel an; das Gateway ordnet nur über den Namen zu. Deutsch und Englisch berichtigt.
+- Am Verhalten des Plugins ändert sich nichts. Am Gerät nicht gemessen; geprüft unter PHP 7.4 und 8.4 auf dem Arbeitsrechner.
 
 ## Neu in 1.0.23
 
