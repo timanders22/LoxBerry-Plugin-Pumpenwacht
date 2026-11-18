@@ -14,6 +14,10 @@ require_once __DIR__ . '/pw_regel.php';
  * mit weiteren Ausgabezielen, pw_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 1.0.25: Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
+ * 18.11.2026 "Ja, umbauen"): Einstellungen sichern und zurueckspielen nach pw_sicherung_beschreibung(). Liegt
+ * neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
+require_once __DIR__ . '/sicherung.php';
 
 /**
  * Die laufende Fassung des Plugins - aus EINER Quelle.
@@ -171,7 +175,7 @@ function pw_json_schreiben($pfad, $daten, $rechte = 0664)
  * von der Sicherung beim Zurueckspielen und von der Selbstpruefung. Eine
  * zweite Wahrheit ueber zulaessige Werte gibt es nicht.
  *
- * Bis 0.9.7 pruefte nur das Formular. pw_sicherung_lesen() uebernahm den
+ * Bis 0.9.7 pruefte nur das Formular. Die damalige Lesefunktion der Sicherung uebernahm den
  * Wert ungeprueft - gemessen 28.08.2026 gingen stale_s = -999 (das Plugin
  * wird blind), an_w = "kein wert" (stiller Rueckfall auf 20 W) und ein
  * mqtt_topic mit Zeilenumbruch (siehe pw_mqtt_publish) anstandslos durch.
@@ -238,7 +242,7 @@ function pw_grenzen()
         'signal_an'          => array('art' => 'text', 'muster' => '#^(\+[0-9]{6,20})?$#'),
         /* Nr. 36 b (Stufe 2): Ansage bei Alarm - je Alarmart abwaehlbar. Der Block 'tts' steht
          * NICHT hier: er ist ein Feld und wird mit den Regeln der gemeinsamen Sprachausgabe
-         * geprueft (pw_config_speichern(), pw_sicherung_lesen()). */
+         * geprueft (pw_config_speichern(), pw_sicherung_beschreibung()). */
         'ansage_trockenlauf'        => array('art' => 'haken'),
         'ansage_ueberlast'          => array('art' => 'haken'),
         'ansage_dauerlauf'          => array('art' => 'haken'),
@@ -505,6 +509,17 @@ function pw_wandern($d, $vorgaben_fuellen = true)
          * sagt: leer" - und der zweite Fall loescht ein Geheimnis. */
     }
     $neu['pumpen'] = $liste;
+    /* 1.0.25 (Bauform des Hausherrn 15.11.2026, Regeln/05 "Modul 1.2.4"): die Lesefunktion sortiert nichts
+     * aus. Ein Schluessel oben, der weder global noch die Pumpenliste ist (etwa von Hand eingetragen), bleibt
+     * stehen; bis 1.0.24 fiel er hier still weg. Die Konfigurationslage nennt ihn als fremd
+     * (pw_cfg_vervollstaendigen()), und das Zurueckspielen einer Sicherung entfernt ihn und nennt ihn mit
+     * Namen (Sicherungsmodul, K_JETZT_ENTFERNT). In der flachen Form vor 1.0.0 gehoert alles Nicht-Globale
+     * der einen Pumpe - dort bleibt es wie bisher. */
+    if (isset($d['pumpen']) && is_array($d['pumpen'])) {
+        foreach ($d as $k => $v) {
+            if (!array_key_exists($k, $neu)) { $neu[$k] = $v; }
+        }
+    }
     return $neu;
 }
 
@@ -919,7 +934,13 @@ function pw_config_speichern($cfg)
      * Funktion pw_paths(). Beim ersten Versuch hiess sie $p, ueberschrieb
      * die Pfade, und danach lief $p['config'] ins Leere - "Undefined array
      * key config", und gespeichert wurde nichts. */
+    $pw_bekannt = pw_vorgaben();
     foreach ($cfg as $k => $v) {
+        /* 1.0.25: ein fremder Schluessel oben kommt nur aus der Datei selbst (pw_wandern() laesst ihn stehen;
+         * Formular und Sicherung koennen keinen bringen: pw_pumpe_zurueck() und das Sicherungsmodul nehmen nur
+         * bekannte). Er wird geschrieben, wie er dastand - sonst scheiterte jedes Speichern an einem von Hand
+         * eingetragenen Feld. */
+        if ($k !== 'pumpen' && !array_key_exists($k, $pw_bekannt)) { continue; }
         if ($k === 'ansage_regeln' || $k === 'ansage_token_herkunft') {     // 1.0.16: Felder des Stamms, geprueft beim Lesen
             if (!is_array($v)) { return false; }
             continue;
@@ -2748,295 +2769,302 @@ function pw_abo_titel()
  * ================================================================== */
 
 /**
- * Die Sicherungsdatei bauen - MIT Kopf.
+ * Die Sicherungsdatei bauen - ueber das gemeinsame Sicherungsmodul.
  *
- * Der Kopf sagt, aus welchem Plugin und aus welcher Fassung die Datei
- * stammt. Ohne ihn ist eine Sicherung von einer beliebigen JSON-Datei mit
- * passenden Schluesseln nicht zu unterscheiden.
+ * 1.0.25: Kopf und Inhalt baut sicherung_bauen() (webfrontend/html/sicherung.php,
+ * Abschrift der Stammfassung, Auftrag des Hausherrn 18.11.2026 "Ja, umbauen") aus
+ * der Beschreibung pw_sicherung_beschreibung(). Wie bisher: der Kopf traegt das
+ * Kennzeichen _plugin = pumpenwacht (seit 0.9.8, Namensform, bleibt), _fassung und
+ * _stand; die Datei traegt die VOLLE Konfiguration samt Aktionstoken, SignalBot-Token
+ * und aller Pumpen - ohne das Geheimnis des Formularmerkmals (O5, 1.0.4), ohne die
+ * Sprechtoken und ohne den Vermerk ansage_token_herkunft ('nie_aus_datei', 'sichern').
+ * Wuerde das eigene Zurueckspielen die Datei abweisen, sagt es der Kopf _warnung, nur
+ * mit Namen.
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
+ * Rueckgabe: der Text der Datei oder false.
  */
 function pw_sicherung_bauen($cfg = null)
 {
-    $cfg = $cfg === null ? pw_pumpe(pw_config()) : $cfg;
-    $kopf = array(
-        '_plugin'  => 'pumpenwacht',
-        '_fassung' => pw_fassung(),
-        '_stand'   => date('Y-m-d H:i:s'),
-        '_hinweis' => 'Sicherung des LoxBerry-Plugins Pumpenwaechter. '
-                    . 'Sie enthaelt das Aktionstoken und gegebenenfalls das Token fuer '
-                    . 'SignalBot - wie ein Kennwort behandeln. Die Sprechtoken der Sprachausgabe '
-                    . 'sind nie enthalten.',
-    );
-    $aus = array_merge($kopf, $cfg);
-    /* O5 (1.0.4): das Geheimnis des Formularmerkmals gehoert NICHT hinein
-     * (Regeln/05). Bis 1.0.3 stand es darin, und aus der Datei liess sich das
-     * Merkmal der Seite nachrechnen: ein POST "Neues Aktionstoken" nur mit
-     * diesem Merkmal wirkte (Pruefbericht oberflaeche O5). */
-    unset($aus['formgeheim']);
-    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung. */
-    if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }
-    unset($aus['ansage_token_herkunft']);     // 1.0.16: gehoert zu den Token, die nie in einer Sicherung stehen
+    $cfg = $cfg === null ? pw_config() : $cfg;
+    $js = sicherung_json(sicherung_bauen(pw_sicherung_beschreibung(), is_array($cfg) ? $cfg : array()));
+    return $js === '' ? false : $js;
+}
+
+/**
+ * 1.0.25: Die Vorgaben der Sicherung - die globalen Schluessel in der Reihenfolge von
+ * pw_global_schluessel() und die Pumpenliste mit EINER Pumpe nach pw_vorgaben_pumpe(),
+ * so wie pw_wandern() eine frische Konfiguration bildet. Die Schluessel einer Pumpe
+ * stehen NICHT oben: oben standen sie nur in der flachen Form bis 0.9.14.
+ */
+function pw_sicherung_vorgaben()
+{
+    $v = pw_vorgaben();
+    $aus = array();
+    foreach (pw_global_schluessel() as $g) {
+        if (array_key_exists($g, $v)) { $aus[$g] = $v[$g]; }
+    }
+    $aus['pumpen'] = array(pw_vorgaben_pumpe());
     return $aus;
 }
 
 /**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ * 1.0.25: Die Schluessel oben, die eine aeltere Sicherung dieser Linie noch nicht
+ * kennen konnte. Fehlen sie, behalten sie den geltenden Wert, und die Meldung nennt
+ * sie (Regeln/05, Welle 1 Nr. 6). Gemessen 18.11.2026 an pw_vorgaben() und
+ * pw_global_schluessel() aller Archive 0.9.9 bis 1.0.24: SignalBot seit 1.0.5, die
+ * Ansage (tts und die sieben Anlaesse) seit 1.0.7, die Haken der Befehlsbruecke seit
+ * 1.0.14, "Wann gesprochen wird" seit 1.0.16. aktionstoken und mqtt_ein schreibt jede
+ * Fassung mit Kopf; die Pumpenliste jede ab 1.0.0 (davor: pw_sicherung_flach()).
  *
- * Der Kern der Sache ist EIN Satz: Grundlage ist der LAUFENDE Stand, nicht
- * die Werkseinstellung. Ein Schluessel, den die Datei nicht nennt, behaelt
- * seinen bisherigen Wert und wird nicht auf Werk gesetzt.
- *
- * Bis 0.9.7 war es umgekehrt: die Funktion baute auf pw_vorgaben() auf und
- * setzte darauf, was in der Datei stand. Gemessen am 28.08.2026 wurde die
- * Datei {"mqtt_topic":"hauswasser"} mit "1 Werte uebernommen" quittiert und
- * setzte dabei modell auf "frei", trocken_w auf 0, sperren_ein auf 0 und
- * das aktionstoken auf "" - damit war jede Adresse in Loxone still tot, und
- * die Meldung war woertlich richtig.
- *
- * Die erste Fassung dieser Korrektur verlangte einen Kopf und lehnte jede
- * unvollstaendige Datei ab. Das erschlug den Befund - und dazu zwei Faelle,
- * die niemand erschlagen wollte: eine Sicherung aus 0.9.7 hat keinen Kopf,
- * und ihr fehlen die beiden Schluessel, die es erst in 0.9.8 gibt. Sie waere
- * ausgerechnet beim Aktualisieren abgelehnt worden. Gefunden hat das
- * Werkzeuge/sicherung_wirkung.py, das seine Probe ohne Kopf baut.
- *
- * Was bleibt:
- * 1. Der Kopf wird GELESEN, wenn er da ist - ein fremdes Plugin wird
- *    abgelehnt -, aber nicht mehr verlangt. Und er wird als Kopf behandelt,
- *    nicht als Einstellung: das ist die Falle vom 26.08.2026
- *    (WiFi-Scanner-NG), wo eine Lesefunktion ihren eigenen Kopf als
- *    fremden Schluessel abwies.
- * 2. Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust.
- * 3. Jeder WERT wird geprueft, nicht nur der Schluessel (pw_wert_pruefen).
- * 4. Eine Datei ohne einen einzigen bekannten Schluessel wird abgelehnt.
- * 5. Alle Beanstandungen werden gesammelt, nicht nur die erste - und wenn
- *    eine dabei ist, wird GAR NICHTS geschrieben.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene,
- *                  erwartete, unveraendert[]).
+ * Bis 1.0.24 setzte eine Sicherung ohne die Haken der Befehlsbruecke beide auf 0;
+ * seit 1.0.25 behalten sie den geltenden Wert wie jeder spaetere Schluessel.
  */
-function pw_sicherung_lesen($roh)
+function pw_sicherung_spaete_schluessel()
 {
-    $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(pw_t('EINST.SICH_KEIN_JSON')), 0, 0, array());
-    }
-    /* Der Kopf wird VOR der Wanderung abgetrennt: '_plugin' und '_fassung'
-     * sind keine Einstellungen und haben in keiner Pumpe etwas zu suchen. */
-    foreach (array_keys($daten) as $k) {
-        if (strncmp((string) $k, '_', 1) !== 0) { continue; }
-        if ($k === '_plugin' && (!is_string($daten[$k]) || $daten[$k] !== 'pumpenwacht')) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_FREMDES_PLUGIN'),
-                                is_scalar($daten[$k]) ? (string) $daten[$k] : gettype($daten[$k]));
-        }
-        unset($daten[$k]);
-    }
-    /* O5 (1.0.4): ein mitgebrachtes formgeheim wird UEBERGANGEN - nicht
-     * uebernommen und nicht beanstandet. So bleiben Sicherungen aus 1.0.3
-     * lesbar, und das Geheimnis der laufenden Anlage bleibt, wie es ist. */
-    unset($daten['formgeheim']);
-    $vorg_global = array_intersect_key(pw_vorgaben(),
-                                       array_flip(pw_global_schluessel()));
-    unset($vorg_global['formgeheim']);
+    return array('signal_ein', 'signal_dringend', 'signal_ordner', 'signal_token', 'signal_an',
+                 'tts', 'ansage_trockenlauf', 'ansage_ueberlast', 'ansage_dauerlauf', 'ansage_schaltspiel',
+                 'ansage_kein_anlauf', 'ansage_still', 'ansage_ruht',
+                 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'ansage_regeln');
+}
 
-    /* O6 (1.0.4): die FORM der Pumpenliste und die Kennungen werden VOR der
-     * Wanderung geprueft - die Wanderung wuerde eine Kennung still
-     * zurechtbiegen ("<b>x</b>" -> "bxb", eine Liste -> "array"). */
-    if (isset($daten['pumpen'])) {
-        foreach (array_keys($daten) as $k) {
-            if ($k === 'pumpen' || array_key_exists($k, $vorg_global)) { continue; }
-            $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), (string) $k);
+/**
+ * 1.0.25: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
+ *
+ * - Kennzeichen pumpenwacht (seit 0.9.8 im Kopf jeder Sicherung, Namensform).
+ * - Oben die globalen Schluessel; jeder Wert geht durch pw_wert_pruefen(), dieselbe
+ *   Positivliste wie im Formular, und wird in dessen Normalform uebernommen.
+ * - pumpen: eine Liste, zugeordnet ueber die Kennung id (Regel 3 des Moduls je Pumpe).
+ *   Jede Pumpe traegt jeden Schluessel aus pw_vorgaben_pumpe() - so schreibt es jede
+ *   Fassung seit 1.0.0 -, sonst wird die Datei abgewiesen ('pflicht'). Kennung,
+ *   Doppel, Praefixe und Rueckkopplung des Quell-Themas wie bis 1.0.24 geprueft.
+ * - tts: der Block der gemeinsamen Sprachausgabe ohne Sprechtoken; traegt die Datei
+ *   eines, wird sie abgewiesen. ansage_regeln: geprueft mit ansage_regeln_wert().
+ * - Vermerke, die nie aus einer Datei kommen und ihren geltenden Wert behalten:
+ *   formgeheim (Geheimnis des Formularmerkmals, gehoert nicht in eine Sicherung) und
+ *   ansage_token_herkunft.
+ * - 'alt': die Schluessel einer Pumpe, wie sie die flache Form bis 0.9.14 oben trug;
+ *   aus ihnen baut pw_sicherung_flach() die eine Pumpe (Uebergang, Regel 19 des Moduls).
+ *   Nur fuer eine Datei OHNE Pumpenliste: $roh ist die Datei, die zurueckgespielt wird.
+ *   Traegt sie 'pumpen' (jede Sicherung seit 1.0.0), ist ein Schluessel einer Pumpe oben
+ *   unbekannt - er wird verworfen und mit Namen genannt (Regel 2 des Moduls; Frage 25
+ *   der Nacht 18.11.2026, Entscheidung des Hausherrn 18.11.2026 "Ich folge deinen
+ *   Empfehlungen"). Die erste Bauform von 1.0.25 (unveroeffentlicht) uebersprang ihn auch
+ *   dort still ueber 'alt'; 1.0.24 wies die ganze Datei ab (SICH_FREMD). Ohne $roh (Sichern,
+ *   Haken, Meldungen) bleibt 'alt' wie fuer die flache Form; sicherung_bauen() schreibt
+ *   ohnehin keinen Schluessel aus 'alt'.
+ * Eine Sicherung ganz ohne Kopf (bis 0.9.7) wird abgewiesen (Regeln/05 Regel 1); bis
+ * 1.0.24 wurde sie angenommen.
+ */
+function pw_sicherung_beschreibung($roh = null)
+{
+    $alt = array_keys(pw_vorgaben_pumpe());
+    if (is_string($roh)) {
+        /* Dieselbe Lesung wie im Modul (sicherung_lesen(): eine UTF-8-BOM vorn faellt weg), nur um die Form zu
+         * erkennen; geprueft wird die Datei danach vom Modul. */
+        $d = json_decode(substr($roh, 0, 3) === "\xEF\xBB\xBF" ? substr($roh, 3) : $roh, true);
+        if (is_array($d) && array_key_exists('pumpen', $d)) {
+            $alt = array();
         }
-        if (!is_array($daten['pumpen'])) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'pumpen', gettype($daten['pumpen']));
-            return array(null, $mangel, 0, 0, array());
+    }
+    $werk = array_keys(ansage_werk_block());
+    $tts_knoten = array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
+                                   + array('fehlt' => 'behalten'));
+    foreach (array_diff($werk, ansage_geheim()) as $n) {
+        if (!isset($tts_knoten[$n])) { $tts_knoten[$n] = array('art' => 'wert', 'fehlt' => 'behalten'); }
+    }
+    $rg_knoten = array();
+    foreach (array_keys(ansage_regeln_vorgaben()) as $n) {
+        $rg_knoten[$n] = array('art' => 'wert', 'fehlt' => 'behalten');
+    }
+    $pk = array();
+    foreach (array_keys(pw_vorgaben_pumpe()) as $n) {
+        $pk[$n] = array('art' => 'wert', 'fehlt' => 'pflicht');
+    }
+    $schluessel = array(
+        'pumpen' => sicherung_liste(array_keys(pw_vorgaben_pumpe()), 'id', $pk)
+                    + array('pruefen' => 'pw_sicherung_pumpen_pruefen', 'wandeln' => 'pw_sicherung_pumpen_wandeln'),
+        'tts' => sicherung_block(array_merge($werk, ansage_geheim()), $tts_knoten)
+                 + array(
+                     'sichern' => 'ansage_sicherung_bereinigen',
+                     'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                         /* Gemessen am Block der DATEI: Regel 3 des Moduls setzt ein leeres Feld vorher
+                          * auf den geltenden Wert. */
+                         $tm = ansage_sicherung_mangel($roh);
+                         if ($tm) { return sprintf(pw_t('DURCHSAGE.SICH_TOKEN'), implode(', ', $tm)); }
+                         $g = '';
+                         if (!is_array($w) || ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, pw_ansage_modi()) === null) {
+                             return sprintf(pw_t('DURCHSAGE.SICH_WERT'), ansage_kennung_text($g, pw_ansage_k()));
+                         }
+                         return '';
+                     },
+                     'wandeln' => function ($w) {
+                         $g = '';
+                         return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, pw_ansage_modi());
+                     }),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben()), $rg_knoten)
+                 + array(
+                     'pruefen' => function ($w) {
+                         $g = '';
+                         if (ansage_regeln_wert($w, $g) === null) {
+                             return sprintf(pw_t('DURCHSAGE.SICH_WERT'),
+                                            ansage_kennung_text($g !== '' ? $g : 'M_R_BLOCK', pw_ansage_k()));
+                         }
+                         return '';
+                     },
+                     'wandeln' => function ($w) {
+                         $g = '';
+                         return ansage_regeln_wert($w, $g);
+                     }),
+    );
+    /* Normalform wie im Formular: der Wert, den pw_wert_pruefen() zurueckgibt. */
+    foreach (array_keys(pw_grenzen()) as $k) {
+        if (!in_array($k, pw_global_schluessel(), true) || isset($schluessel[$k])) { continue; }
+        $schluessel[$k] = array('art' => 'wert', 'wandeln' => function ($w) use ($k) {
+            $e = pw_wert_pruefen($k, $w);
+            return $e[0];
+        });
+    }
+    foreach (pw_sicherung_spaete_schluessel() as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array('art' => 'wert'); }
+        $schluessel[$s]['fehlt'] = 'behalten';
+    }
+    return array(
+        'kennzeichen' => 'pumpenwacht',
+        'hinweis' => 'Sicherung des LoxBerry-Plugins Pumpenwaechter. '
+                   . 'Sie enthaelt das Aktionstoken und gegebenenfalls das Token fuer '
+                   . 'SignalBot - wie ein Kennwort behandeln. Die Sprechtoken der Sprachausgabe '
+                   . 'sind nie enthalten.',
+        /* _fassung aus der Plugin-Datenbank bzw. plugin.cfg ueber den Leser dieser Linie - keine Zahl im Code. */
+        'fassung' => 'pw_fassung',
+        'vorgaben' => pw_sicherung_vorgaben(),
+        'schluessel' => $schluessel,
+        'alt' => $alt,
+        'nie_aus_datei' => array('formgeheim', 'ansage_token_herkunft'),
+        'pruefen' => function ($k, $w) {
+            $e = pw_wert_pruefen((string) $k, $w);
+            return $e[1] === '' ? '' : sprintf(pw_t('SICHERUNG.K_WERT'), (string) $k);
+        },
+        'quer' => 'pw_sicherung_quer',
+        'vorbehandeln' => 'pw_sicherung_flach',
+        'vorbereiten' => 'pw_sicherung_vorbereiten',
+        'jetzt' => 'pw_config',
+        't' => 'pw_t',
+        'e' => 'pw_e',
+    );
+}
+
+/**
+ * 1.0.25: Die Pumpenliste einer Sicherung pruefen - wie bis 1.0.24: jede Pumpe ein Feld,
+ * die Kennung wie die Oberflaeche sie vergibt (O6, pw_kennung_gueltig()), keine Kennung
+ * doppelt, jeder Wert durch pw_wert_pruefen() (auch der Name). Eine leere Liste ist keine
+ * Konfiguration - ohne Pumpe waere die Oberflaeche leer. Rueckgabe: Liste der
+ * Beanstandungen mit Namen (pumpen[N].feld), nie mit Werten.
+ */
+function pw_sicherung_pumpen_pruefen($w, $k = 'pumpen', $neu = null, $roh = null)
+{
+    if (!is_array($w) || $w === array() || array_keys($w) !== range(0, count($w) - 1)) {
+        return sprintf(pw_t('SICHERUNG.K_WERT'), 'pumpen');
+    }
+    $aus = array();
+    $ids = array();
+    foreach ($w as $i => $p) {
+        $n = 'pumpen[' . ($i + 1) . ']';
+        if (!is_array($p)) {
+            $aus[] = sprintf(pw_t('SICHERUNG.K_WERT'), $n);
+            continue;
         }
-        $form_mangel = false;
-        foreach ($daten['pumpen'] as $i => $p) {
-            if (!is_array($p)) {
-                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'pumpen.' . $i, gettype($p));
-                $form_mangel = true;
+        foreach ($p as $f => $v) {
+            if ($f === 'id') {
+                if (!pw_kennung_gueltig($v) || isset($ids[$v])) {
+                    $aus[] = sprintf(pw_t('SICHERUNG.K_WERT'), $n . '.id');
+                } else {
+                    $ids[$v] = true;
+                }
                 continue;
             }
-            if (array_key_exists('id', $p) && !pw_kennung_gueltig($p['id'])) {
-                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'pumpen.' . $i . '.id',
-                                    is_scalar($p['id']) ? pw_kurztext((string) $p['id'], 60) : gettype($p['id']));
-                $form_mangel = true;
-            }
+            $e = pw_wert_pruefen((string) $f, $v);
+            if ($e[1] !== '') { $aus[] = sprintf(pw_t('SICHERUNG.K_WERT'), $n . '.' . $f); }
         }
-        if ($form_mangel) { return array(null, $mangel, 0, 0, array()); }
-    } elseif (array_key_exists('id', $daten) && !pw_kennung_gueltig($daten['id'])) {
-        $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), 'id',
-                            is_scalar($daten['id']) ? pw_kurztext((string) $daten['id'], 60) : gettype($daten['id']));
-        return array(null, $mangel, 0, 0, array());
     }
+    return $aus;
+}
 
-    /* Eine Sicherung aus der Zeit vor 1.0.0 ist flach. Sie wird GEWANDERT
-     * gelesen, nicht abgewiesen. OHNE Vorgaben aufzufuellen. */
-    $daten = pw_wandern($daten, false);
-    $vorg_pumpe = pw_vorgaben_pumpe();
-    $je_pumpe = count($vorg_pumpe) - 1;
-    $wieviele = isset($daten['pumpen']) ? max(1, count($daten['pumpen'])) : 1;
-    $erwartet = count($vorg_global) + $je_pumpe * $wieviele;
-    /* Der laufende Stand ist die Grundlage. */
-    $neu = pw_config();
+/** 1.0.25: Die Pumpenliste in die Normalform des Formulars bringen (nach bestandener Pruefung). */
+function pw_sicherung_pumpen_wandeln($w)
+{
+    foreach ($w as $i => $p) {
+        foreach ($p as $f => $v) {
+            if ($f === 'id') { continue; }
+            $e = pw_wert_pruefen((string) $f, $v);
+            if ($e[1] === '') { $w[$i][$f] = $e[0]; }
+        }
+    }
+    return $w;
+}
 
-    /* Die globalen Schluessel. */
-    $anzahl = 0;
-    $gesehen = array();
-    $pw_tsspaet = array();     // Welle Mehrfach-Ziele (1.0.15): tts.ziele, wenn die Sicherung die Liste nicht kannte
+/**
+ * 1.0.25: Pruefungen ueber die ganze Datei, wie bis 1.0.24: zwei Pumpen mit demselben
+ * oder einem verschachtelten Themenpraefix, und ein Quell-Thema, das die eigenen Themen
+ * trifft (B4) - beides weist die Datei ab.
+ */
+function pw_sicherung_quer($neu, $r = null, $daten = null)
+{
+    $aus = array();
+    if (!is_array($neu)) { return $aus; }
+    foreach (pw_praefixe_pruefen($neu) as $d) { $aus[] = array('pumpen', sprintf(pw_t('EINST.SICH_PRAEFIX'), $d)); }
+    foreach (pw_quelle_kollisionen($neu) as $d) { $aus[] = array('pumpen', sprintf(pw_t('EINST.SICH_ECHO'), $d)); }
+    return $aus;
+}
+
+/**
+ * 1.0.25: Uebergangsregel fuer die flache Form (Sicherungen 0.9.8 bis 0.9.14, Kopf mit
+ * _plugin = pumpenwacht, aber noch ohne Pumpenliste): die Schluessel der einen Pumpe
+ * standen oben. Wie pw_wandern() und wie bis 1.0.24 wird daraus EINE Pumpe mit der
+ * Kennung aus pw_vorgaben_pumpe(); was die Datei nicht nennt, behaelt den Wert der
+ * Pumpe mit dieser Kennung (sonst die Vorgabe), ein leerer Wert ueberschreibt keinen
+ * gefuellten. Die Werte gehen danach durch dieselbe Pruefung wie jede Pumpenliste. Die
+ * Meldung nennt pumpen als "nach einer Uebergangsregel abgeleitet" (Regel 19 des Moduls).
+ * Traegt die Datei eine Pumpenliste oder keinen Schluessel einer Pumpe, aendert sich
+ * nichts.
+ */
+function pw_sicherung_flach($bereit, $jetzt, $daten)
+{
+    if (!is_array($daten) || array_key_exists('pumpen', $daten)) { return $bereit; }
+    $vp = pw_vorgaben_pumpe();
+    $eine = array();
     foreach ($daten as $k => $w) {
-        if ($k === 'pumpen') { continue; }
-        if ($k === 'ansage_token_herkunft') { continue; }     // 1.0.16: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // 1.0.16: ungueltig = abgewiesen, gueltig = uebernommen
-            $pw_rg = '';
-            $pw_r = ansage_regeln_wert($w, $pw_rg);
-            if ($pw_r === null) { $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_WERT'), $pw_rg); continue; }
-            $neu[$k] = $pw_r;
-            $gesehen[$k] = true;
-            $anzahl++;
-            continue;
-        }
-        if (!array_key_exists($k, $vorg_global)) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), (string) $k);
-            continue;
-        }
-        if ($k === 'tts') {
-            /* Nr. 36 b (Stufe 2): eine Sicherung dieses Plugins traegt nie ein Sprechtoken -
-             * traegt die Datei eines, wird sie abgewiesen. Die geltenden Sprechtoken bleiben;
-             * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft (Heimnetz). */
-            $tm = ansage_sicherung_mangel($w);
-            if ($tm) {
-                $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_TOKEN'), implode(', ', $tm));
-                continue;
-            }
-            $tg = '';
-            $tp = ansage_wert_pruefen($w, $tg, pw_ansage_modi());
-            if ($tp === null) {
-                $mangel[] = sprintf(pw_t('DURCHSAGE.SICH_WERT'), ansage_kennung_text($tg, pw_ansage_k()));
-                continue;
-            }
-            $tj = (isset($neu['tts']) && is_array($neu['tts'])) ? $neu['tts'] : array();
-            /* Welle Mehrfach-Ziele (1.0.15): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
-             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und die Liste
-             * "unveraendert" nennt sie. */
-            $pw_tsneu = array('tts' => $tp);
-            $pw_tsjetzt = array('tts' => $tj);
-            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-             * heisst "keine weiteren Ziele" und wird so uebernommen. */
-            $pw_spaete = array();
-            if (is_array($pw_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
-                list($pw_tsneu['tts'], $pw_spaete) = ansage_sicherung_spaet($pw_tsneu['tts'],
-                    (isset($pw_tsjetzt['tts']) && is_array($pw_tsjetzt['tts'])) ? $pw_tsjetzt['tts'] : null);
-            }
-            foreach ($pw_spaete as $pw_sn) { $pw_tsspaet[] = $pw_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-            list($tv) = ansage_vervollstaendigen($pw_tsneu['tts'] + $tj);
-            $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
-            $gesehen[$k] = true;
-            $anzahl++;
-            continue;
-        }
-        /* Ein LEERES Aktionstoken nimmt die Sicherung nicht an, wenn eines
-         * steht (0.9.11). Gefragt wird nur bei einer Zeichenkette - eine
-         * Liste faellt unten durch die Wertpruefung. */
-        if ($k === 'aktionstoken' && is_string($w) && trim($w) === ''
-            && trim((string) (isset($neu[$k]) ? $neu[$k] : '')) !== '') {
-            $mangel[] = sprintf(pw_t('EINST.SICH_LEER_GEHEIM'), $k);
-            continue;
-        }
-        /* c1: ein LEERES SignalBot-Token ueberschreibt kein gespeichertes - es
-         * wird uebergangen und als unveraendert genannt (wie ein leeres
-         * Kennwortfeld im Formular). */
-        if ($k === 'signal_token' && is_string($w) && trim($w) === ''
-            && trim((string) (isset($neu[$k]) ? $neu[$k] : '')) !== '') {
-            continue;
-        }
-        list($wert, $grund) = pw_wert_pruefen($k, $w);
-        if ($grund !== '') {
-            $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), $k,
-                                is_scalar($w) ? pw_kurztext((string) $w, 60) : gettype($w));
-            continue;
-        }
-        $neu[$k] = $wert;
-        $gesehen[$k] = true;
-        $anzahl++;
+        $k = (string) $k;
+        if ($k !== 'id' && array_key_exists($k, $vp)) { $eine[$k] = $w; }
     }
+    if (!$eine) { return $bereit; }
+    $id = (string) $vp['id'];
+    $ziel = null;
+    foreach ((is_array($jetzt) && isset($jetzt['pumpen']) && is_array($jetzt['pumpen'])) ? $jetzt['pumpen'] : array() as $p) {
+        if (is_array($p) && isset($p['id']) && (string) $p['id'] === $id) { $ziel = $p; break; }
+    }
+    $pumpe = array('id' => $id);
+    foreach ($vp as $f => $v) {
+        if ($f === 'id') { continue; }
+        $j = ($ziel !== null && array_key_exists($f, $ziel)) ? $ziel[$f] : $v;
+        $pumpe[$f] = (array_key_exists($f, $eine) && !sicherung_leer_bleibt($eine[$f], $j)) ? $eine[$f] : $j;
+    }
+    $bereit['pumpen'] = array($pumpe);
+    return $bereit;
+}
 
-    /* Und jede Pumpe fuer sich. Die Kennung entscheidet, welche Pumpe im
-     * laufenden Stand ersetzt wird; eine unbekannte Kennung kommt hinzu. */
-    $pumpen_neu = array();
-    foreach (isset($daten['pumpen']) ? $daten['pumpen'] : array() as $i => $p) {
-        if (!is_array($p)) { continue; }
-        $id = isset($p['id']) ? (string) $p['id'] : ('pumpe' . ($i + 1));
-        $ziel = array();
-        foreach (isset($neu['pumpen']) ? $neu['pumpen'] : array() as $vorhanden) {
-            if (isset($vorhanden['id']) && (string) $vorhanden['id'] === $id) {
-                $ziel = $vorhanden; break;
-            }
-        }
-        $ziel = array_merge(pw_vorgaben_pumpe(), $ziel, array('id' => $id));
-        foreach ($p as $k => $w) {
-            if ($k === 'id') { continue; }
-            if (!array_key_exists($k, $vorg_pumpe)) {
-                $mangel[] = sprintf(pw_t('EINST.SICH_FREMD'), $id . '.' . $k);
-                continue;
-            }
-            /* O6 (1.0.4): auch der Name geht durch die Positivliste - wie im
-             * Formular. Bis 1.0.3 stand hier substr(..., 0, 40): eine Liste
-             * wurde "Array" (mit PHP-Warnung samt Serverpfad in der Seite),
-             * und die EIGENE Sicherung mit 40 Zeichen samt Umlaut wurde
-             * mitten im Zeichen geschnitten und als "liess sich nicht
-             * schreiben" abgewiesen. */
-            list($wert, $grund) = pw_wert_pruefen($k, $w);
-            if ($grund !== '') {
-                $mangel[] = sprintf(pw_t('EINST.SICH_WERT'), $id . '.' . $k,
-                                    is_scalar($w) ? pw_kurztext((string) $w, 60) : gettype($w));
-                continue;
-            }
-            $ziel[$k] = $wert;
-            $anzahl++;
-        }
-        $pumpen_neu[] = $ziel;
+/**
+ * 1.0.25: Vor dem Speichern - der Block der Sprachausgabe in seiner Normalform, die
+ * geltenden Sprechtoken bleiben (sie stehen nie in einer Sicherung). Behaelt der Block
+ * als Ganzes den geltenden Wert (Sicherung vor 1.0.7), bleibt er, wie er ist.
+ */
+function pw_sicherung_vorbereiten($neu, $jetzt, $r)
+{
+    if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        list($tv) = ansage_vervollstaendigen($neu['tts'], 'aus');
+        $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
     }
-    if ($pumpen_neu) {
-        $neu['pumpen'] = $pumpen_neu;
-        $doppelt = pw_praefixe_pruefen($neu);
-        foreach ($doppelt as $d) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_PRAEFIX'), $d);
-        }
-        /* B4 (1.0.4): ein Quell-Filter, der die eigenen Themen trifft, hoerte
-         * das Plugin selbst ab - Rueckkopplung (Pruefbericht mqtt B4). */
-        foreach (pw_quelle_kollisionen($neu) as $d) {
-            $mangel[] = sprintf(pw_t('EINST.SICH_ECHO'), $d);
-        }
-    }
-
-    /* Gruppe 5 / MQTT (1.0.14, Entwurf pw 3.3): eine Sicherung bis 1.0.13 kennt die beiden Haken der
-     * Befehlsbruecke nicht - damals gab es keine Bruecke. Sie ergibt deshalb "aus" (0), nicht den laufenden
-     * Wert; dass sie fehlten, sagt die Liste "unveraendert" unten wie bei jedem fehlenden Schluessel. */
-    foreach (array('befehle_mqtt_ein', 'befehle_mqtt_steuern') as $pw_bk) {
-        if (!isset($gesehen[$pw_bk])) { $neu[$pw_bk] = 0; }
-    }
-
-    /* 4. Eine Datei ohne einen einzigen bekannten Schluessel ist keine. */
-    if ($anzahl === 0) {
-        $mangel[] = pw_t('EINST.SICH_LEER');
-    }
-
-    /* Was die Datei nicht genannt hat, bleibt stehen - und wird GENANNT. */
-    $unveraendert = array();
-    foreach ($vorg_global as $k => $v) {
-        if (!isset($gesehen[$k])) { $unveraendert[] = $k; }
-    }
-    foreach ($pw_tsspaet as $pw_sn2) { $unveraendert[] = $pw_sn2; }     // Welle Mehrfach-Ziele (1.0.15): tts.ziele
-
-    return array($mangel ? null : $neu, $mangel, $anzahl, $erwartet, $unveraendert);
+    return $neu;
 }
 
 /**
@@ -4956,18 +4984,26 @@ function pw_meldung_abholen()
  * eigene Zurueckspielen?
  * ==================================================================
  *
- * Ueber DIESELBE Funktion wie das Zurueckspielen (pw_sicherung_lesen()), mit
- * der Datei, die der Knopf "Einstellungen sichern" gerade liefern wuerde.
+ * Ueber DIESELBE Funktion wie das Zurueckspielen (sicherung_lesen() des gemeinsamen
+ * Moduls mit pw_sicherung_beschreibung(), seit 1.0.25), mit der Datei, die der
+ * Knopf "Einstellungen sichern" gerade liefern wuerde.
  * Rueckgabe: die Beanstandungen (leer = die Sicherung liesse sich
  * zurueckspielen). Der Knopf liefert die Datei trotzdem - die Oberflaeche
  * warnt nur (vb_RAHMEN, X-3).
  */
 function pw_sicherung_selbstpruefung()
 {
-    $js = json_encode(pw_sicherung_bauen(pw_config()), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if (!is_string($js)) { return array(pw_t('EINST.SICH_SCHREIBFEHLER')); }
-    list($neu, $mangel) = pw_sicherung_lesen($js);
-    return $neu === null ? (array) $mangel : array();
+    $cfg = pw_config();
+    $js = pw_sicherung_bauen($cfg);
+    if (!is_string($js)) { return array(pw_t('SICHERUNG.K_SCHREIBFEHLER')); }
+    $b = pw_sicherung_beschreibung($js);     // wie beim Zurueckspielen: mit der Datei (Pumpenliste, 'alt' leer)
+    $r = sicherung_lesen($b, $js, $cfg);
+    if ($r['ok']) { return array(); }
+    $aus = array();
+    foreach ($r['beanstandet'] as $x) {
+        $aus[] = $x['text'] !== '' ? $x['text'] : sprintf(pw_t('SICHERUNG.K_WERT'), $x['name']);
+    }
+    return $aus;
 }
 
 /* ==================================================================

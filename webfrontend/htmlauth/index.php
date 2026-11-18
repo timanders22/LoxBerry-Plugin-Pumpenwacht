@@ -350,14 +350,15 @@ if ($pw_ist_post && isset($_POST['vorlage_bb'])) {
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
  *
- * Seit 0.9.8 traegt sie einen Kopf (_plugin, _fassung, _stand), und die
- * Lesefunktion VERLANGT ihn. */
+ * Seit 0.9.8 traegt sie einen Kopf (_plugin, _fassung, _stand); seit 1.0.25
+ * baut ihn das gemeinsame Sicherungsmodul, und eine Datei ganz ohne Kopf wird
+ * beim Zurueckspielen abgewiesen. */
 if ($pw_ist_post && isset($_POST['pw_sichern'])) {
     /* AUSDRUECKLICH die volle Form, nicht die flache Sicht der gewaehlten
      * Pumpe: eine Sicherung, die nur die gerade angesehene Pumpe enthaelt,
      * loescht beim Zurueckspielen alle anderen. */
-    $pw_js = json_encode(pw_sicherung_bauen(pw_config()),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* 1.0.25: Kopf und Inhalt baut das gemeinsame Sicherungsmodul (pw_sicherung_bauen(), sicherung_bauen()). */
+    $pw_js = pw_sicherung_bauen(pw_config());
     if ($pw_js !== false) {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
@@ -366,59 +367,58 @@ if ($pw_ist_post && isset($_POST['pw_sichern'])) {
         echo $pw_js;
         exit;
     }
-    $pw_fehler[] = pw_t('EINST.SICH_SCHREIBFEHLER');
+    $pw_fehler[] = pw_t('SICHERUNG.K_SCHREIBFEHLER');
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+ * 1.0.25: ueber das gemeinsame Sicherungsmodul, in jeder Linie gleich (Auftrag des Hausherrn 18.11.2026 "Ja,
+ * umbauen"). Den Eingang prueft sicherung_eingang(): zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und
+ * nichts geaendert), dann is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die
+ * Groessengrenze des Moduls. Lesen, Pruefen und Speichern macht sicherung_zurueckspielen() mit
+ * pw_sicherung_beschreibung(): Unbekanntes wird verworfen und genannt, ein leerer Wert laesst den bisherigen
+ * stehen, eine Beanstandung aendert GAR NICHTS (alle Beanstandungen, nicht nur die erste). Gespeichert wird genau
+ * der Stand, den das Modul liefert - die volle Form samt Pumpenliste, ohne pw_pumpe_zurueck(); die Zweitschrift
+ * zieht pw_config_speichern() nach, das Modul misst sie danach. */
 if ($pw_ist_post && isset($_POST['pw_zurueck'])) {
-    if (!isset($_FILES['pw_sicherung']) || !is_array($_FILES['pw_sicherung'])
-        || !isset($_FILES['pw_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['pw_sicherung']['tmp_name'])) {
-        $pw_fehler[] = pw_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['pw_sicherung']['size'] > 262144) {
-        $pw_fehler[] = pw_t('EINST.SICH_ZU_GROSS');
+    /* Die Meldungen reisen als Klartext in der Einmalmeldung und werden bei der Ausgabe einmal maskiert
+     * (pw_meldung_ablegen()) - das Modul maskiert die eingesetzten Namen deshalb nicht noch einmal. */
+    $pw_klar = array('e' => function ($s) { return (string) $s; });
+    list($pw_sroh, $pw_sab) = sicherung_eingang(pw_sicherung_beschreibung(), $_POST, $_FILES, 'pw_sicherung');
+    if ($pw_sab !== null) {
+        $pw_sm = sicherung_meldungen($pw_klar + pw_sicherung_beschreibung(), $pw_sab);
+        foreach ($pw_sm['fehler'] as $pw_x) { $pw_fehler[] = $pw_x; }
     } else {
-        list($pw_neu, $pw_mangel, $pw_n, $pw_soll, $pw_unver) = pw_sicherung_lesen(
-            (string) @file_get_contents($_FILES['pw_sicherung']['tmp_name']));
-        if ($pw_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $pw_fehler[] = pw_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $pw_mangel);
-        /* HIER die volle Form OHNE pw_pumpe_zurueck(): $pw_neu kommt aus
-         * pw_sicherung_lesen() und ist bereits die ganze Konfiguration samt
-         * Pumpenliste. Wer sie durch pw_pumpe_zurueck() schickt, liest sie
-         * als flache Sicht - und 'pumpen' faellt heraus, weil es dort weder
-         * global noch ein Pumpenschluessel ist. Die Sicherung galt dann als
-         * angenommen und wurde nicht uebernommen. */
-        } elseif (pw_config_speichern($pw_neu)) {
-            /* B9 (1.0.4): Praefixe, die es nach dem Zurueckspielen nicht
-             * mehr gibt, werden abgeraeumt - wie beim Wechsel im Reiter MQTT. */
-            $pw_bleiben = pw_eigene_praefixe($pw_neu);
-            foreach (pw_eigene_praefixe($pw_voll) as $pw_ap) {
-                if (in_array($pw_ap, $pw_bleiben, true)) { continue; }
-                list($pw_am, $pw_af) = pw_ui_praefix_leeren($pw_ap);
-                $pw_meldungen = array_merge($pw_meldungen, $pw_am);
-                $pw_fehler = array_merge($pw_fehler, $pw_af);
+        /* Mit der Datei: 'alt' (die Pumpenschluessel der flachen Form bis 0.9.14) gilt nur fuer eine Datei ohne
+         * Pumpenliste; in einer Sicherung seit 1.0.0 wird ein solcher Schluessel oben verworfen und genannt. */
+        $pw_sb = pw_sicherung_beschreibung($pw_sroh);
+        $pw_sb['speichern'] = function ($neu) { return pw_config_speichern($neu); };
+        $pw_sb['zweitschrift'] = function () { $p = pw_paths(); return array($p['config'], $p['sicherung']); };
+        /* Den Dienst nachziehen UND sagen, was mit ihm geschah (Regeln/05). Wie bis 1.0.24: Praefixe, die es nicht
+         * mehr gibt, werden im Broker abgeraeumt (B9). Neu: die Befehlsbruecke wird geschaltet wie beim Speichern im
+         * Reiter MQTT, denn die Sicherung traegt ihre Haken. Waechter und Zuhoerer lesen die Konfiguration selbst. */
+        $pw_sb['nachziehen'] = function ($neu, $vorher) use (&$pw_fehler) {
+            $h = array();
+            $bleiben = pw_eigene_praefixe($neu);
+            foreach (pw_eigene_praefixe($vorher) as $ap) {
+                if (in_array($ap, $bleiben, true)) { continue; }
+                list($am, $af) = pw_ui_praefix_leeren($ap);
+                $h = array_merge($h, $am);
+                $pw_fehler = array_merge($pw_fehler, $af);
             }
-            /* Beide Zahlen nennen, und die uebrigen beim Namen. "1 Werte
-             * uebernommen" war bis 0.9.7 woertlich richtig und trotzdem
-             * beschwichtigend - es sagte nicht, was mit den anderen
-             * sechzehn geschah. */
-            $pw_meldungen[] = sprintf(pw_t('EINST.SICH_UEBERNOMMEN'), $pw_n, $pw_soll)
-                . ($pw_unver
-                   ? ' ' . sprintf(pw_t('EINST.SICH_UNVERAENDERT'),
-                                   count($pw_unver), implode(', ', $pw_unver))
-                   : '');
-            pw_log(sprintf('Sicherung zurueckgespielt: %d von %d Einstellungen.',
-                           $pw_n, $pw_soll));
-        } else {
-            $pw_fehler[] = pw_t('EINST.SICH_SCHREIBFEHLER');
-        }
+            list($bart, $baus) = pw_bruecke_schalten();
+            if ($bart === 'ein') { $h[] = pw_t('BEFEHL.M_EIN'); }
+            elseif ($bart === 'aus') { $h[] = pw_t('BEFEHL.M_AUS'); }
+            elseif ($bart === 'start_fehl') { $pw_fehler[] = sprintf(pw_t('BEFEHL.M_START_FEHL'), $baus); }
+            elseif ($bart === 'stop_fehl') { $pw_fehler[] = sprintf(pw_t('BEFEHL.M_STOP_FEHL'), $baus); }
+            $h[] = pw_t('EINST.SICH_DIENST');
+            return $h;
+        };
+        $pw_sb['log'] = function ($z) { pw_log($z); };
+        $pw_sr = sicherung_zurueckspielen($pw_sb, $pw_sroh);
+        $pw_sm = sicherung_meldungen($pw_klar + $pw_sb, $pw_sr);
+        foreach ($pw_sm['fehler'] as $pw_x) { $pw_fehler[] = $pw_x; }
+        foreach ($pw_sm['hinweise'] as $pw_x) { $pw_meldungen[] = $pw_x; }
     }
     $pw_tab = 'tab-settings';
 }
@@ -1307,8 +1307,8 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
 /* X-3 (Verbesserungsbau 30.09.2026): besteht die eigene Sicherung das eigene
  * Zurueckspielen? Dieselbe Pruefung wie beim Zurueckspielen
  * (pw_sicherung_selbstpruefung()). Eine Warnung - der Knopf liefert die
- * Datei trotzdem. Die Beanstandungen aus pw_sicherung_lesen() sind seit 1.0.20
- * (K5) Klartext und werden hier EINMAL maskiert. */
+ * Datei trotzdem. Die Beanstandungen (seit 1.0.25 aus dem gemeinsamen
+ * Sicherungsmodul) sind Klartext und werden hier EINMAL maskiert. */
 $pw_sich_mangel = pw_sicherung_selbstpruefung();
 if ($pw_sich_mangel) { ?>
 <div class="sm-warnung"><b><?= pw_e(pw_t('EINST.SICH_SELBST_WARN')) ?></b><ul style="margin:6px 0 0 18px;padding:0;"><?php
@@ -1328,6 +1328,7 @@ if ($pw_sich_mangel) { ?>
     <input data-role="none" type="hidden" name="fmt" value="<?= pw_e($pw_fmt) ?>"><?= $pw_qf ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="pw_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(pw_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="pw_zurueck" value="1"><?= pw_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>

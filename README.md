@@ -6,9 +6,22 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.25 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.25
+
+- **Einstellungen sichern und zurückspielen wie in den übrigen Plugins:** Beide Knöpfe im Reiter *Einstellungen* laufen jetzt über das gemeinsame Sicherungsmodul (Fassung 1.2.11), das auch die anderen Plugins dieser Reihe benutzen. Der Knopf *Einstellungen zurückspielen* wirkt nur mit dem neuen Haken *Ja, die geltenden Einstellungen durch die Sicherung ersetzen*; ohne ihn wird nichts gelesen und nichts geändert.
+- **Unbekannte Einstellungen weisen die Datei nicht mehr ab:** Eine Einstellung, die diese Fassung nicht kennt – oben, in der Sprachausgabe oder in einer Pumpe –, wird verworfen und mit ihrem Namen genannt; der Rest wird zurückgespielt. Bis 1.0.24 wurde die ganze Datei abgewiesen. Einträge der geltenden Einstellungen, die diese Fassung nicht kennt (etwa von Hand eingetragen), fallen beim Zurückspielen weg und werden ebenfalls mit Namen genannt, nie mit Wert. Beim gewöhnlichen Speichern bleiben sie stehen; bis 1.0.24 fielen sie schon beim Lesen der Konfiguration still weg.
+- **Leere Werte löschen nichts:** Ein leerer Wert in der Datei überschreibt keinen bestehenden; der bisherige bleibt, und die Meldung nennt ihn. Ein leeres Aktionstoken wies bis 1.0.24 die ganze Datei ab.
+- **Ältere Sicherungen:** Sicherungen ab 0.9.8 tragen das Kennzeichen des Plugins und werden weiter angenommen. Einstellungen, die eine solche Fassung noch nicht kannte, behalten ihren geltenden Wert, und die Meldung nennt sie – auch die beiden Haken der Befehlsbrücke, die bis 1.0.24 dabei auf „aus“ gingen. Aus einer Sicherung vor 1.0.0 (eine Pumpe, noch ohne Pumpenliste) wird wie bisher die eine Pumpe; die Meldung nennt das. Steht dagegen in einer Sicherung mit Pumpenliste (seit 1.0.0) eine Einstellung einer Pumpe oben statt in der Liste, wird sie wie jede unbekannte Einstellung verworfen und mit ihrem Namen genannt; bis 1.0.24 wies sie die ganze Datei ab. Sicherungen ganz ohne Kopf (bis 0.9.7) sind von einer fremden Datei nicht sicher zu unterscheiden und werden abgewiesen; bis 1.0.24 wurden sie angenommen.
+- **Strenger bei der Pumpenliste:** Eine Datei mit leerer Pumpenliste oder mit zwei Pumpen derselben Kennung wird abgewiesen. Bis 1.0.24 blieb eine leere Liste still unbeachtet, und eine doppelte Kennung wurde beim nächsten Lesen still umbenannt.
+- **Wie bisher:** Jeder Wert wird mit derselben Prüfung wie im Formular geprüft; eine Datei mit einem unzulässigen Wert, mit überschneidenden Themenpräfixen oder mit einem Quell-Thema, das die eigenen Themen trifft, ändert gar nichts, und alle Beanstandungen werden genannt. Eine Datei mit einem Sprechtoken wird abgewiesen, die hinterlegten Sprechtoken bleiben. Das Geheimnis des Formularmerkmals steht nie in der Sicherung. Die Zweitschrift `pumpenwacht.backup.json` neben dem Konfigordner wird bei jedem Speichern nachgezogen; nach dem Zurückspielen prüft das Plugin jetzt zusätzlich, ob sie mit der Konfiguration übereinstimmt, und sagt es, wenn nicht.
+- **Was danach geschieht, steht in der Meldung:** Themen einer Pumpe, die es nach dem Zurückspielen nicht mehr gibt, werden im Broker abgeräumt; die Befehlsbrücke wird gestartet oder angehalten wie beim Speichern im Reiter *MQTT*; der Wächter übernimmt die Einstellungen mit dem nächsten Minutentakt.
+- **Knopf „Dokumentation“:** `plugin.cfg` nennt jetzt `WEBSITE=` mit diesem Repository; LoxBerry übernimmt die Adresse bei der Installation und zeigt sie in der Plugin-Verwaltung als Knopf.
+- **Nicht gemessen:** Diese Fassung wurde nicht auf einem LoxBerry installiert. Gemessen wurde mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, und mit den Sicherungen aller Vorfassungen 0.9.9 bis 1.0.24 im Arbeitsordner.
+- **Sicherungsmodul 1.2.11:** Wandelt ein Plugin beim Zurückspielen eine Sicherung aus einer Textdatei um, sagt die Meldung das jetzt mit einem gemeinsamen Satz, und Mängel darin werden in allen Plugins mit denselben Bezeichnungen genannt. Dieses Plugin wandelt keine Textdateien um; an seinem Verhalten ändert sich dadurch nichts. Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am Gerät nicht gemessen.
 
 ## Neu in 1.0.24
 
