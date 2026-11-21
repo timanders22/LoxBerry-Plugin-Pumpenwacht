@@ -6,9 +6,17 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.26 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.27 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.27
+
+- Die Kopfzeile zeigt jetzt die installierte Fassung in derselben Form wie alle Plugins (bisher über eine eigene Fassungsfunktion).
+- **Neu – Mindestdauer der Überlast (ab Werk 0 = wie bisher):** Je Pumpe lässt sich einstellen, wie lange die Leistung ununterbrochen über der Überlast-Grenze liegen muss, bevor der Befund „Überlast“ entsteht (Reiter Einstellungen, „Überlast erst nach (s, 0 = sofort)“, ganze Sekunden von 0 bis 600). Erst dann folgen Alarm, Sperre, Ansage und Statustext. Kürzere Spitzen geben keinen Befund; der Reiter Test zeigt die Überschreitungen des Tages mit der längsten, das Protokoll nennt sie einmal je Lauf. Die Dauer kommt aus den Zeitstempeln der Messwerte; eine Lücke (kein Messwert oder ein Abstand über „Meldung veraltet nach“) beginnt sie neu. Endet eine längere Überschreitung zwischen zwei Messwerten, entsteht der Befund mit dem Messwert, der ihr Ende zeigt. Anlass: an einer Anlage kamen zwei Überlast-Alarme beim gewöhnlichen Abpumpen (1212 W über der Grenze von 1092 W für 17 und 22 s). Gemessen auf dem Arbeitsrechner (Selbsttest des Rechenkerns mit nachgebildeten Leistungsreihen, PHP 7.4 und 8.4); am Gerät nicht gemessen.
+- **Geändert – jeder Alarm wird angesagt:** Bis 1.0.26 sagte der Minutentakt nur einen Alarm an, der in diesem Augenblick noch anstand; ein kurzer Alarm zwischen zwei Takten (etwa 17 s) blieb stumm. Jetzt folgt die Ansage dem Eintritt eines Alarms: jeder neue Alarm genau einmal, auch wenn er beim Takt schon vorbei ist. Wann gesprochen wird (Nachtruhe, Wiederholsperre, `haus/ansage/ruhe`), bleibt unverändert; Trockenlauf und Überlast sprechen wie bisher auch in der Nachtruhe, die übrigen Alarme werden dort nicht nachgeholt. Zwischen zwei Minutentakten sieht der Weg höchstens zwei Alarme je Pumpe. Die Meldung über SignalBot meldete schon bisher auch einen vorbeigegangenen Alarm; seit 1.0.27 auch den ersten von zwei Alarmen zwischen zwei Takten (Beginn und Ende, dieselbe Bremse von 30 Minuten je Art). Gemessen auf dem Arbeitsrechner (PHP 7.4 und 8.4); am Gerät nicht gemessen.
+- **Neu – Leistung der letzten Läufe im Reiter Test:** Die Zeile „Passt die gemessene Leistung zur Überlast-Grenze?“ nennt aus den letzten 20 Läufen die typische Leistung (Median über die Laufzeit) und die höchste. Liegt die typische über 90 % der Grenze oder reißen die Spitzen sie in mindestens der Hälfte der Läufe, steht dort ein Kreuz mit dem Hinweis, Modell „frei“ zu wählen und die Grenze nach dem Typenschild zu setzen (P1 × 1,2). Am Verhalten ändert die Zeile nichts. Gezählt wird ab dem ersten Lauf nach der Aktualisierung.
+- **Hilfe zum Modell:** Die Modelltabelle kennt nur die Grundfos SCALA1 3-35 und 3-45; die Hilfe sagt das jetzt beim Feld selbst.
 
 ## Neu in 1.0.26
 

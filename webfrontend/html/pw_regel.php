@@ -31,7 +31,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-define('PW_KERN', '1.3.0');
+define('PW_KERN', '1.4.0');
 
 /* Die Befunde. Diese Woerter erscheinen uebersetzt in der Oberflaeche; wer
  * hier eines hinzufuegt, muss es in beiden Sprachdateien unter [BEFUND]
@@ -235,6 +235,105 @@ function pw_starts_deckel($cfg)
 }
 
 /**
+ * 1.0.27: Die Mindestdauer der Ueberlast in Sekunden (ueberlast_s).
+ *
+ * 0 heisst sofort - so verhielt sich die Pumpenwacht bis 1.0.26, und so steht
+ * es ab Werk. Die Modelltabelle traegt dafuer keine Vorgabe.
+ */
+function pw_ueberlast_s($cfg)
+{
+    return max(0.0, pw_zahl(isset($cfg['ueberlast_s']) ? $cfg['ueberlast_s'] : 0, 0.0));
+}
+
+/**
+ * 1.0.27: Die Leistung eines Laufs als Zeitanteile je Wattwert.
+ *
+ * $seg ist eine Liste von array(Watt, Sekunden). Ein Wert gilt, bis der
+ * naechste kommt (wie in pw_verarbeiten); die Sekunden kommen aus den
+ * Zeitstempeln. Hoechstens 60 Eintraege: ueber 60 werden die zwei mit dem
+ * kleinsten Abstand zusammengelegt (gewichtet), damit der Zustand klein
+ * bleibt, auch bei einem Lauf ueber Stunden.
+ */
+function pw_lauf_seg_dazu($seg, $w, $d)
+{
+    $aus = array();
+    foreach ((array) $seg as $x) {
+        if (is_array($x) && count($x) === 2) { $aus[] = array((float) $x[0], (float) $x[1]); }
+    }
+    $w = round((float) $w);
+    foreach ($aus as $i => $x) {
+        if ($x[0] == $w) { $aus[$i][1] += (float) $d; return $aus; }
+    }
+    $aus[] = array($w, (float) $d);
+    if (count($aus) > 60) {
+        usort($aus, function ($a, $b) { return $a[0] < $b[0] ? -1 : ($a[0] > $b[0] ? 1 : 0); });
+        $best = 1;
+        $abst = INF;
+        for ($i = 1; $i < count($aus); $i++) {
+            if ($aus[$i][0] - $aus[$i - 1][0] < $abst) { $abst = $aus[$i][0] - $aus[$i - 1][0]; $best = $i; }
+        }
+        $a = $aus[$best - 1];
+        $b = $aus[$best];
+        $s = $a[1] + $b[1];
+        $mw = $s > 0 ? round(($a[0] * $a[1] + $b[0] * $b[1]) / $s) : $a[0];
+        array_splice($aus, $best - 1, 2, array(array($mw, $s)));
+    }
+    return $aus;
+}
+
+/** 1.0.27: Der Median der Leistung ueber die Laufzeit (zeitgewichtet); 0 = nichts gemessen. */
+function pw_lauf_median($seg)
+{
+    $l = array();
+    $summe = 0.0;
+    foreach ((array) $seg as $x) {
+        if (is_array($x) && count($x) === 2 && (float) $x[1] > 0) { $l[] = array((float) $x[0], (float) $x[1]); $summe += (float) $x[1]; }
+    }
+    if ($summe <= 0) { return 0.0; }
+    usort($l, function ($a, $b) { return $a[0] < $b[0] ? -1 : ($a[0] > $b[0] ? 1 : 0); });
+    $bis = 0.0;
+    foreach ($l as $x) {
+        $bis += $x[1];
+        if ($bis >= $summe / 2.0) { return $x[0]; }
+    }
+    return $l[count($l) - 1][0];
+}
+
+/**
+ * 1.0.27: Passt die gemessene Leistung der letzten Laeufe zur Ueberlast-Grenze?
+ *
+ * Anlass (Hausherr 21.11.2026): an einer Anlage stand fuer eine Sumpfpumpe
+ * das Modell SCALA1 3-45 - die Grenze 1092 W kam aus dem Datenblatt einer
+ * anderen Pumpe. Eine Auskunft, kein Befund: sie aendert nichts am Verhalten.
+ * Passt nicht, wenn die typische Leistung (Median der Laeufe) ueber 90 % der
+ * Grenze liegt oder die Spitze in mindestens der Haelfte von mindestens zwei
+ * Laeufen ueber der Grenze lag. Grenze 0 = aus: nichts zu vergleichen.
+ *
+ * Rueckgabe: n, typisch, spitze, reissen (Laeufe ueber der Grenze), passt.
+ */
+function pw_leistung_urteil($laeufe, $grenze)
+{
+    $grenze = pw_zahl($grenze, 0.0);
+    $med = array();
+    $spitze = 0.0;
+    $reissen = 0;
+    foreach ((array) $laeufe as $l) {
+        if (!is_array($l)) { continue; }
+        $m = pw_zahl(isset($l['median']) ? $l['median'] : 0, 0.0);
+        $sp = pw_zahl(isset($l['spitze']) ? $l['spitze'] : 0, 0.0);
+        if ($m <= 0) { continue; }
+        $med[] = $m;
+        $spitze = max($spitze, $sp);
+        if ($grenze > 0 && $sp > $grenze) { $reissen++; }
+    }
+    $n = count($med);
+    sort($med);
+    $typ = $n === 0 ? 0.0 : (($n % 2) ? $med[intdiv($n, 2)] : ($med[$n / 2 - 1] + $med[$n / 2]) / 2.0);
+    $passt = !($grenze > 0 && $n > 0 && ($typ > 0.9 * $grenze || ($n >= 2 && $reissen * 2 >= $n)));
+    return array('n' => $n, 'typisch' => $typ, 'spitze' => $spitze, 'reissen' => $reissen, 'passt' => $passt);
+}
+
+/**
  * Den Befund stellen.
  *
  * Rueckgabe: (Befund, Beiwert). Der Beiwert ist die Zahl, die den Befund
@@ -248,9 +347,16 @@ function pw_starts_deckel($cfg)
  *
  * $anfrage: array('seit' => Zeitpunkt der Anforderung, 0 = keine) - nur
  * belegt, wenn Loxone die Anforderung meldet.
+ *
+ * $ueber (1.0.27): die Ueberschreitung der Ueberlast-Grenze, wie pw_schritt()
+ * sie aus den Zeitstempeln fuehrt - 'seit_s' wie lange sie ununterbrochen
+ * anhaelt (0 = gerade begonnen oder nicht bekannt), 'zu_s' die Dauer einer
+ * Ueberschreitung, die in diesem Schritt endete und noch keinen Befund hatte
+ * (-1 = keine), 'spitze_w' deren hoechster Wert. Ohne $ueber gilt 0 s: mit
+ * ueberlast_s = 0 (Vorgabe) wie bis 1.0.26 sofort, sonst kein Befund.
  */
 function pw_befund($mess, $cfg, $lauf_s, $starts, $jetzt, $anfrage = null,
-                   $ruhe = null)
+                   $ruhe = null, $ueber = null)
 {
     $laeuft = isset($mess['laeuft']) ? (int) $mess['laeuft'] : -1;
     $watt = isset($mess['watt']) ? $mess['watt'] : null;
@@ -287,6 +393,17 @@ function pw_befund($mess, $cfg, $lauf_s, $starts, $jetzt, $anfrage = null,
         return array(PW_RUHT, $ruhe_seit);
     }
 
+    /* 1.0.27: Mindestdauer der Ueberlast. Endete in diesem Schritt eine
+     * Ueberschreitung, die so lange ununterbrochen anhielt wie verlangt, ohne
+     * dass ein Schritt waehrend ihr es sah, gilt sie als Ueberlast - mit
+     * ihrer Spitze als Beiwert (siehe pw_schritt). */
+    $ueber_w = pw_zahl(isset($cfg['ueberlast_w']) ? $cfg['ueberlast_w'] : 0, 0.0);
+    $ueber_s = pw_ueberlast_s($cfg);
+    $ueber_seit = pw_zahl(isset($ueber['seit_s']) ? $ueber['seit_s'] : 0, 0.0);
+    $ueber_zu = pw_zahl(isset($ueber['zu_s']) ? $ueber['zu_s'] : -1, -1.0);
+    $ueber_vorbei = ($ueber_w > 0 && $ueber_s > 0 && $ueber_zu >= $ueber_s);
+    $ueber_spitze = pw_zahl(isset($ueber['spitze_w']) ? $ueber['spitze_w'] : 0, 0.0);
+
     if ($laeuft === 1) {
         $w = pw_zahl($watt, 0.0);
         $trocken_w = pw_zahl(isset($cfg['trocken_w']) ? $cfg['trocken_w'] : 0, 0.0);
@@ -298,14 +415,24 @@ function pw_befund($mess, $cfg, $lauf_s, $starts, $jetzt, $anfrage = null,
         if ($trocken_w > 0 && $w > 0 && $w < $trocken_w && $lauf_s >= $trocken_s) {
             return array(PW_TROCKEN, $w);
         }
-        $ueber_w = pw_zahl(isset($cfg['ueberlast_w']) ? $cfg['ueberlast_w'] : 0, 0.0);
-        if ($ueber_w > 0 && $w > $ueber_w && $lauf_s >= 10) {
+        /* 1.0.27: erst nach ueberlast_s Sekunden ununterbrochener
+         * Ueberschreitung (0 = sofort, wie bis 1.0.26 - die Vorgabe). Anlass,
+         * gemessen am Geraet 20./21.11.2026 (alarm.json): zwei Ueberlast-Alarme
+         * beim gewoehnlichen Abpumpen, 1212 W ueber 1092 W fuer 22 und 17 s. */
+        if ($ueber_w > 0 && $w > $ueber_w && $lauf_s >= 10 && $ueber_seit >= $ueber_s) {
             return array(PW_UEBERLAST, $w);
+        }
+        if ($ueber_vorbei) {
+            return array(PW_UEBERLAST, $ueber_spitze);
         }
         $dauer_s = pw_zahl(isset($cfg['dauerlauf_s']) ? $cfg['dauerlauf_s'] : 0, 0.0);
         if ($dauer_s > 0 && $lauf_s >= $dauer_s) {
             return array(PW_DAUERLAUF, $lauf_s);
         }
+    }
+    /* 1.0.27: die Pumpe ging mit der Ueberschreitung aus - auch dann zaehlt sie. */
+    if ($laeuft === 0 && $ueber_vorbei) {
+        return array(PW_UEBERLAST, $ueber_spitze);
     }
 
     $grenze = (int) pw_zahl(isset($cfg['starts_h']) ? $cfg['starts_h'] : 0, 0.0);
@@ -342,13 +469,16 @@ function pw_sperrt($befund, $cfg)
  *
  * $mess:  watt, tag (Datum als Text), tagbeginn (Unix-Sekunde von 00:00 des
  *         Tages, aus dem die Uhr kommt - der Kern hat selbst keine)
- * $cfg:   an_w, trocken_w, trocken_s, ueberlast_w, dauerlauf_s, starts_h,
+ * $cfg:   an_w, trocken_w, trocken_s, ueberlast_w, ueberlast_s, dauerlauf_s, starts_h,
  *         anlauf_s, sperren_ein, sperre_<befund>, quittung_noetig
  * $alt:   der Stand des letzten Durchlaufs
  *
  * Rueckgabe: der neue Stand. Endet ein Tag, traegt der neue Stand
  * zusaetzlich 'vortag' mit den abgeschlossenen Tageszahlen - die Bibliothek
  * legt sie in die Tagesbilanz und entfernt den Schluessel wieder.
+ * Endet ein Lauf, in dem die Leistung kuerzer als ueberlast_s ueber der
+ * Ueberlast-Grenze lag, traegt er 'ueber_meldung' (1.0.27) - die Bibliothek
+ * schreibt daraus EINE Protokollzeile und entfernt den Schluessel.
  */
 function pw_schritt($mess, $cfg, $alt, $jetzt)
 {
@@ -387,6 +517,25 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
         'vor_luecke'    => isset($alt['vor_luecke']) ? (int) $alt['vor_luecke'] : -1,
         'luecke_ab'     => pw_zahl(isset($alt['luecke_ab']) ? $alt['luecke_ab'] : 0, 0.0),
         'luecke_lauf_s' => pw_zahl(isset($alt['luecke_lauf_s']) ? $alt['luecke_lauf_s'] : 0, 0.0),
+        /* 1.0.27: die offene Ueberschreitung der Ueberlast-Grenze (ueber_ab 0 = keine), was davon heute zu sehen
+         * war (ueber_tag_*: Anzahl, davon ohne Befund, die laengste mit ihrer Spitze) und in diesem Lauf
+         * (ueber_lauf_*: nur die ohne Befund, fuer die eine Protokollzeile am Laufende). */
+        'ueber_ab'       => pw_zahl(isset($alt['ueber_ab']) ? $alt['ueber_ab'] : 0, 0.0),
+        'ueber_w'        => pw_zahl(isset($alt['ueber_w']) ? $alt['ueber_w'] : 0, 0.0),
+        'ueber_gemeldet' => !empty($alt['ueber_gemeldet']) ? 1 : 0,
+        'ueber_tag_n'    => (int) pw_zahl(isset($alt['ueber_tag_n']) ? $alt['ueber_tag_n'] : 0, 0.0),
+        'ueber_tag_kurz' => (int) pw_zahl(isset($alt['ueber_tag_kurz']) ? $alt['ueber_tag_kurz'] : 0, 0.0),
+        'ueber_tag_s'    => pw_zahl(isset($alt['ueber_tag_s']) ? $alt['ueber_tag_s'] : 0, 0.0),
+        'ueber_tag_w'    => pw_zahl(isset($alt['ueber_tag_w']) ? $alt['ueber_tag_w'] : 0, 0.0),
+        'ueber_lauf_n'   => (int) pw_zahl(isset($alt['ueber_lauf_n']) ? $alt['ueber_lauf_n'] : 0, 0.0),
+        'ueber_lauf_s'   => pw_zahl(isset($alt['ueber_lauf_s']) ? $alt['ueber_lauf_s'] : 0, 0.0),
+        'ueber_lauf_w'   => pw_zahl(isset($alt['ueber_lauf_w']) ? $alt['ueber_lauf_w'] : 0, 0.0),
+        /* 1.0.27: die Leistung des laufenden Laufs (Zeitanteile je Wattwert, Spitze, letzter Wert) und die
+         * letzten 20 abgeschlossenen Laeufe - Grundlage der Zeile "Passt die gemessene Leistung ..." im Reiter Test. */
+        'lauf_seg'       => (isset($alt['lauf_seg']) && is_array($alt['lauf_seg'])) ? $alt['lauf_seg'] : array(),
+        'lauf_spitze'    => pw_zahl(isset($alt['lauf_spitze']) ? $alt['lauf_spitze'] : 0, 0.0),
+        'lauf_letzt_w'   => pw_zahl(isset($alt['lauf_letzt_w']) ? $alt['lauf_letzt_w'] : 0, 0.0),
+        'laeufe'         => (isset($alt['laeufe']) && is_array($alt['laeufe'])) ? array_values($alt['laeufe']) : array(),
     );
 
     /* Ein Uhrsprung wird GEMELDET, nicht verrechnet. Der Reiter Test zeigt
@@ -471,6 +620,10 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
         $neu['lauf_s_tag'] = 0.0;
         $neu['starts_tag'] = 0;
         $neu['laengster_tag'] = 0.0;
+        $neu['ueber_tag_n'] = 0;          // 1.0.27
+        $neu['ueber_tag_kurz'] = 0;
+        $neu['ueber_tag_s'] = 0.0;
+        $neu['ueber_tag_w'] = 0.0;
         $anrechnen_ab = ($tagbeginn > $vorher && $tagbeginn <= $jetzt) ? $tagbeginn : $jetzt;
     }
 
@@ -564,6 +717,12 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
             $neu['starts_gesamt']++;
             $neu['anfrage_seit'] = 0.0;   // die Anforderung ist erfuellt
             $neu['lauf_s'] = 0.0;
+            /* 1.0.27: ein neuer Lauf beginnt seine Zaehlung von vorn. */
+            $neu['ueber_lauf_n'] = 0;
+            $neu['ueber_lauf_s'] = 0.0;
+            $neu['ueber_lauf_w'] = 0.0;
+            $neu['lauf_seg'] = array();
+            $neu['lauf_spitze'] = 0.0;
         } elseif ($alt_laeuft === 1) {
             /* Ein Lauf ist zu Ende - seine Dauer wird festgehalten. Sie
              * kommt aus der SUMMIERTEN Laufzeit, nicht mehr aus
@@ -630,14 +789,124 @@ function pw_schritt($mess, $cfg, $alt, $jetzt)
     }
     $ruhe_seit = ($laeuft === 0 && $neu['seit'] > 0)
                ? max(0.0, $jetzt - $neu['seit']) : -1.0;
+
+    /* 1.0.27: WIE LANGE liegt die Leistung schon ueber der Ueberlast-Grenze?
+     *
+     * Bis 1.0.26 stellte pw_befund() die Ueberlast im ersten Schritt mit einem
+     * Wert ueber ueberlast_w (nach 10 s Laufzeit). Am Geraet gab das am
+     * 20./21.11.2026 zwei Alarme beim gewoehnlichen Abpumpen (1212 W ueber
+     * 1092 W fuer 22 und 17 s). Seit 1.0.27 verlangt ueberlast_s (0 = sofort,
+     * die Vorgabe), dass die Ueberschreitung so lange UNUNTERBROCHEN anhaelt.
+     *
+     * Die Dauer kommt aus den Zeitstempeln der Schritte, nicht aus ihrer Zahl.
+     * Sie beginnt mit dem ersten Schritt, der unter der bisherigen Regel eine
+     * Ueberlast gewesen waere (Wert ueber der Grenze, lauf_s >= 10) - frueher
+     * ist nichts gemessen. Sie endet mit dem ersten Schritt darunter: ein Wert
+     * gilt im Plugin, bis der naechste kommt (pw_verarbeiten). Eine Luecke
+     * unterbricht sie - ein Schritt ohne Messwert (laeuft -1) oder ein Abstand
+     * ueber stale_s zum vorigen; was dazwischen war, weiss niemand, und danach
+     * beginnt sie neu.
+     *
+     * Endet eine Ueberschreitung, ohne dass ein Schritt waehrend ihr die
+     * Mindestdauer sah (ein Shelly meldet bei Aenderung und einmal je Minute),
+     * stellt der Schritt den Befund, der ihr Ende sieht - sonst fiele eine
+     * 45-s-Ueberlast mit je einem Messwert an Anfang und Ende durch. Kuerzere
+     * Ueberschreitungen geben keinen Befund; sie werden gezaehlt (Reiter Test)
+     * und am Laufende EINMAL ins Protokoll gegeben (ueber_meldung). */
+    $pw_ue_grenze = pw_zahl(isset($cfg['ueberlast_w']) ? $cfg['ueberlast_w'] : 0, 0.0);
+    $pw_ue_w = ($laeuft === 1) ? pw_zahl(isset($mess['watt']) ? $mess['watt'] : null, 0.0) : 0.0;
+    $pw_ue_jetzt = ($pw_ue_grenze > 0 && $laeuft === 1 && $pw_ue_w > $pw_ue_grenze && $neu['lauf_s'] >= 10);
+    $pw_ue_ab = (float) $neu['ueber_ab'];
+    $pw_ue_d = $jetzt - $vorher;
+    $pw_ue_durch = ($pw_ue_ab > 0 && $vorher > 0 && $pw_ue_ab <= $vorher && $laeuft >= 0
+                    && $pw_ue_d >= 0 && $pw_ue_d <= $pw_stale_s);
+    $pw_ue_zu = null;     // endet in diesem Schritt: array(Dauer, Spitze, mit Befund)
+    $ueber = array('seit_s' => 0.0, 'zu_s' => -1.0, 'spitze_w' => 0.0);
+    if ($pw_ue_ab > 0 && (!$pw_ue_jetzt || !$pw_ue_durch)) {
+        /* Sie endet - mit dem Wert dieses Schritts oder an einer Luecke; dann
+         * gilt nur, was bis zum vorigen Schritt gemessen war. */
+        $pw_ue_zu = array($pw_ue_durch ? $jetzt - $pw_ue_ab : max(0.0, $vorher - $pw_ue_ab),
+                          (float) $neu['ueber_w'], !empty($neu['ueber_gemeldet']));
+        if ($pw_ue_durch && !$pw_ue_zu[2]) {
+            $ueber['zu_s'] = $pw_ue_zu[0];
+            $ueber['spitze_w'] = $pw_ue_zu[1];
+        }
+        $neu['ueber_ab'] = 0.0;
+        $neu['ueber_w'] = 0.0;
+        $neu['ueber_gemeldet'] = 0;
+    }
+    if ($pw_ue_jetzt) {
+        if ($neu['ueber_ab'] <= 0) { $neu['ueber_ab'] = $jetzt; }
+        $neu['ueber_w'] = max((float) $neu['ueber_w'], $pw_ue_w);
+        $ueber['seit_s'] = $jetzt - $neu['ueber_ab'];
+    }
+
     list($befund, $beiwert) = pw_befund(
         array('laeuft' => $laeuft, 'watt' => isset($mess['watt']) ? $mess['watt'] : null),
         $cfg, $neu['lauf_s'], $neu['starts'], $jetzt,
         array('seit' => $neu['anfrage_seit']),
         array('seit_s' => $ruhe_seit,
-              'je_gelaufen' => $neu['starts_gesamt'] > 0 ? 1 : 0));
+              'je_gelaufen' => $neu['starts_gesamt'] > 0 ? 1 : 0),
+        $ueber);
     $neu['befund'] = $befund;
     $neu['beiwert'] = $beiwert;
+
+    /* 1.0.27: die Ueberschreitung buchen. */
+    if ($befund === PW_UEBERLAST) {
+        if ($neu['ueber_ab'] > 0) { $neu['ueber_gemeldet'] = 1; }
+        elseif ($pw_ue_zu !== null) { $pw_ue_zu[2] = true; }
+    }
+    if ($pw_ue_zu !== null) {
+        $neu['ueber_tag_n']++;
+        if ($neu['ueber_tag_n'] === 1 || $pw_ue_zu[0] > $neu['ueber_tag_s']) {
+            $neu['ueber_tag_s'] = round($pw_ue_zu[0], 1);
+            $neu['ueber_tag_w'] = round($pw_ue_zu[1], 1);
+        }
+        if (!$pw_ue_zu[2]) {
+            $neu['ueber_tag_kurz']++;
+            $neu['ueber_lauf_n']++;
+            if ($neu['ueber_lauf_n'] === 1 || $pw_ue_zu[0] > $neu['ueber_lauf_s']) {
+                $neu['ueber_lauf_s'] = round($pw_ue_zu[0], 1);
+                $neu['ueber_lauf_w'] = round($pw_ue_zu[1], 1);
+            }
+        }
+    }
+
+    /* 1.0.27: die Leistung des Laufs - Zeitanteile aus den Zeitstempeln, wie
+     * lauf_s nur ueber gemessene Abstaende (hoechstens stale_s). */
+    $pw_lw_alt = (float) $neu['lauf_letzt_w'];
+    if ($alt_laeuft === 1 && $pw_lw_alt > 0) {
+        $pw_lw_d = $gemessen($vorher, $jetzt);
+        if ($pw_lw_d > 0) { $neu['lauf_seg'] = pw_lauf_seg_dazu($neu['lauf_seg'], $pw_lw_alt, $pw_lw_d); }
+    }
+    if ($laeuft === 1) {
+        $pw_lw = pw_zahl(isset($mess['watt']) ? $mess['watt'] : null, 0.0);
+        $neu['lauf_letzt_w'] = $pw_lw;
+        $neu['lauf_spitze'] = max((float) $neu['lauf_spitze'], $pw_lw);
+    } else {
+        $neu['lauf_letzt_w'] = 0.0;
+    }
+    if ($alt_laeuft === 1 && $laeuft !== 1) {
+        /* Der Lauf ist zu Ende (oder die Messung riss ab): ablegen, wenn
+         * etwas gemessen war - hoechstens die letzten 20. */
+        $pw_ls = 0.0;
+        foreach ($neu['lauf_seg'] as $pw_x) { $pw_ls += (float) $pw_x[1]; }
+        if ($pw_ls > 0) {
+            $neu['laeufe'][] = array('ende' => $jetzt, 's' => round($pw_ls, 1),
+                                     'spitze' => round((float) $neu['lauf_spitze'], 1),
+                                     'median' => round(pw_lauf_median($neu['lauf_seg']), 1));
+            if (count($neu['laeufe']) > 20) { $neu['laeufe'] = array_slice($neu['laeufe'], -20); }
+        }
+        $neu['lauf_seg'] = array();
+        $neu['lauf_spitze'] = 0.0;
+        if ($neu['ueber_lauf_n'] > 0) {
+            $neu['ueber_meldung'] = array('anzahl' => $neu['ueber_lauf_n'], 'dauer_s' => $neu['ueber_lauf_s'],
+                                          'spitze_w' => $neu['ueber_lauf_w'], 'mindest_s' => pw_ueberlast_s($cfg));
+        }
+        $neu['ueber_lauf_n'] = 0;
+        $neu['ueber_lauf_s'] = 0.0;
+        $neu['ueber_lauf_w'] = 0.0;
+    }
 
     /* Sperren und Freigeben.
      *
@@ -1220,6 +1489,142 @@ function pw_selbsttest($ausgabe = true)
                      $cfgk, $sf, 9000000.0 + 36120);
     $pruef('GEGENPROBE echtes Laufende: letzter Lauf 60 s', $sf['letzter_lauf_s'], 60);
     $pruef('GEGENPROBE echtes Laufende: laengster Lauf heute 60 s', $sf['laengster_tag'], 60);
+
+    /* ---- Mindestdauer der Ueberlast (1.0.27) ----
+     *
+     * Nachgebildet nach zwei Laeufen am Geraet (alarm.json, 20./21.11.2026):
+     * Start, 900 W, ab 11 bzw. 13 s 1212 W fuer 22 bzw. 17 s, dann 900 W,
+     * Laufende nach 36 s; Grenze 1092 W. Je Sekunde ein Messwert, ausser wo
+     * "bei Aenderung" steht. Die 900 W sind angenommen, nicht gemessen. */
+    $cfgu = array_merge($cfg, array('trocken_w' => 228, 'ueberlast_w' => 1092, 'starts_h' => 0,
+                                    'stale_s' => 180, 'sperre_ueberlast' => 1));
+    $ue_reihe = function ($cfgx, $punkte, $tag = '2026-11-21') {
+        $t0 = 7000000.0;
+        $s = pw_schritt(array('watt' => 1.5, 'tag' => $tag), $cfgx, array(), $t0 - 10);
+        $alle = array();
+        foreach ($punkte as $p) {
+            $s = pw_schritt(array('watt' => $p[1], 'tag' => $tag), $cfgx, $s, $t0 + $p[0]);
+            $alle[] = array($p[0], $s);
+        }
+        return $alle;
+    };
+    $ue_sek = function ($ab, $dauer, $ende, $luecke = -1) {
+        $p = array();
+        for ($t = 0; $t <= $ende; $t++) {
+            $w = ($t >= $ende) ? 1.5 : (($t >= $ab && $t < $ab + $dauer) ? 1212 : 900);
+            $p[] = array($t, $t === $luecke ? null : $w);
+        }
+        return $p;
+    };
+    $ue_erst = function ($alle) {
+        foreach ($alle as $a) { if ($a[1]['befund'] === PW_UEBERLAST) { return $a[0]; } }
+        return -1;
+    };
+    $ue_wechsel = function ($alle) {
+        $n = 0;
+        $vor = PW_OK;
+        foreach ($alle as $a) {
+            if ($a[1]['befund'] === PW_UEBERLAST && $vor !== PW_UEBERLAST) { $n++; }
+            $vor = $a[1]['befund'];
+        }
+        return $n;
+    };
+    $ue_letzt = function ($alle) { $a = end($alle); return $a[1]; };
+    $ue_meldung = function ($alle) {
+        foreach ($alle as $a) { if (isset($a[1]['ueber_meldung'])) { return $a[1]['ueber_meldung']; } }
+        return null;
+    };
+
+    $r = $ue_reihe($cfgu, $ue_sek(13, 17, 36));
+    $pruef('Ueberlast ohne Mindestdauer: Befund mit dem ersten Wert ueber der Grenze', $ue_erst($r), 13);
+    $pruef('Ueberlast ohne Mindestdauer: ein Alarm', $ue_wechsel($r), 1);
+    $r = $ue_reihe(array_merge($cfgu, array('ueberlast_s' => 0)), $ue_sek(13, 17, 36));
+    $pruef('Mindestdauer 0 heisst sofort', $ue_erst($r), 13);
+    $pruef('Mindestdauer 0: die Ueberschreitung ist gezaehlt', $ue_letzt($r)['ueber_tag_n'], 1);
+    $pruef('Mindestdauer 0: keine ohne Befund', $ue_letzt($r)['ueber_tag_kurz'], 0);
+    $pruef('Mindestdauer 0: keine Protokollmeldung einer Spitze', $ue_meldung($r) === null ? 1 : 0, 1);
+
+    $c30 = array_merge($cfgu, array('ueberlast_s' => 30));
+    $r = $ue_reihe($c30, $ue_sek(13, 17, 36));
+    $pruef('Spitze 17 s, Mindestdauer 30 s: kein Befund', $ue_wechsel($r), 0);
+    $pruef('Spitze 17 s: keine Sperre', $ue_letzt($r)['sperre'], 0);
+    $pruef('Spitze 17 s: gezaehlt als kuerzer als die Mindestdauer', $ue_letzt($r)['ueber_tag_kurz'], 1);
+    $pruef('Spitze 17 s: Dauer aus den Zeitstempeln', $ue_letzt($r)['ueber_tag_s'], 17);
+    $pruef('Spitze 17 s: ihre Spitze', $ue_letzt($r)['ueber_tag_w'], 1212);
+    $um = $ue_meldung($r);
+    $pruef('Spitze 17 s: eine Protokollmeldung am Laufende', $um === null ? -1 : $um['dauer_s'], 17);
+    $pruef('Spitze 17 s: die Meldung nennt die Mindestdauer', $um === null ? -1 : $um['mindest_s'], 30);
+    $r = $ue_reihe($c30, $ue_sek(11, 22, 36));
+    $pruef('Spitze 22 s, Mindestdauer 30 s: kein Befund', $ue_wechsel($r), 0);
+    $r = $ue_reihe(array_merge($cfgu, array('ueberlast_s' => 20)), $ue_sek(11, 22, 36));
+    $pruef('Spitze 22 s, Mindestdauer 20 s: Befund nach 20 s', $ue_erst($r), 31);
+    $r = $ue_reihe($c30, $ue_sek(12, 45, 70));
+    $pruef('Ueberlast 45 s, Mindestdauer 30 s: Befund nach 30 s', $ue_erst($r), 42);
+    $pruef('Ueberlast 45 s: ein Alarm', $ue_wechsel($r), 1);
+    $pruef('Ueberlast 45 s: Sperre gesetzt', $ue_letzt($r)['sperre'], 1);
+    $pruef('Ueberlast 45 s: nicht als kurz gezaehlt', $ue_letzt($r)['ueber_tag_kurz'], 0);
+    $pruef('Ueberlast 45 s: laengste des Tages 45 s', $ue_letzt($r)['ueber_tag_s'], 45);
+
+    $r = $ue_reihe($c30, array(array(0, 900), array(12, 1212), array(57, 900), array(70, 1.5)));
+    $pruef('bei Aenderung, 45 s: Befund mit dem Wert, der das Ende zeigt', $ue_erst($r), 57);
+    $pruef('bei Aenderung, 45 s: Beiwert ist die Spitze', $r[2][1]['beiwert'], 1212);
+    $pruef('bei Aenderung, 45 s: danach wieder ok', $r[3][1]['befund'], PW_OK);
+    $r = $ue_reihe($c30, array(array(0, 900), array(13, 1212), array(30, 900), array(36, 1.5)));
+    $pruef('bei Aenderung, 17 s: kein Befund', $ue_wechsel($r), 0);
+    $r = $ue_reihe($c30, array(array(0, 900), array(12, 1212), array(57, 1.5)));
+    $pruef('Pumpe geht mit der Ueberschreitung aus: Befund', $ue_erst($r), 57);
+
+    $r = $ue_reihe($c30, $ue_sek(12, 68, 90, 30));
+    $pruef('Luecke ohne Messwert: die Dauer beginnt danach neu', $ue_erst($r), 61);
+    $r = $ue_reihe($c30, $ue_sek(12, 14, 40, 26));
+    $pruef('Luecke am Ende: Dauer nur bis zum letzten Messwert davor', $ue_letzt($r)['ueber_tag_s'], 13);
+    $r = $ue_reihe($c30, array(array(0, 900), array(12, 1212), array(212, 1212), array(230, 1212),
+                               array(231, 900), array(240, 1.5)));
+    $pruef('Abstand laenger als stale_s: nicht durchgehend, kein Befund', $ue_wechsel($r), 0);
+    $r = $ue_reihe($c30, array(array(0, 1300), array(5, 1300), array(9, 1300), array(10, 900), array(36, 1.5)));
+    $pruef('Anlaufspitze vor 10 s Laufzeit: keine Ueberschreitung', $ue_letzt($r)['ueber_tag_n'], 0);
+    $r = $ue_reihe($c30, $ue_sek(13, 17, 36));
+    $sx = pw_schritt(array('watt' => 1.5, 'tag' => '2026-11-22'), $c30, $ue_letzt($r), 7000000.0 + 100);
+    $pruef('neuer Tag: Ueberschreitungen von vorn', $sx['ueber_tag_n'], 0);
+    $pruef('neuer Tag: laengste von vorn', $sx['ueber_tag_s'], 0);
+    list($b, ) = pw_befund(array('laeuft' => 1, 'watt' => 1300), $c30, 60, array(), $j);
+    $pruef('pw_befund ohne Dauer, Mindestdauer 30 s: kein Befund', $b, PW_OK);
+    list($b, ) = pw_befund(array('laeuft' => 1, 'watt' => 1300), $c30, 60, array(), $j, null, null,
+                           array('seit_s' => 30));
+    $pruef('pw_befund nach 30 s Ueberschreitung: Ueberlast', $b, PW_UEBERLAST);
+
+    /* ---- Leistung der letzten Laeufe (1.0.27) ---- */
+    $r = $ue_reihe($cfgu, $ue_sek(13, 17, 36));
+    $sx = $ue_letzt($r);
+    $pruef('Laufstatistik: ein Lauf abgelegt', count($sx['laeufe']), 1);
+    $pruef('Laufstatistik: Spitze 1212 W', $sx['laeufe'][0]['spitze'], 1212);
+    $pruef('Laufstatistik: Median ueber die Laufzeit 900 W (19 s zu 17 s)', $sx['laeufe'][0]['median'], 900);
+    $pruef('Laufstatistik: Laufzeit 36 s aus den Zeitstempeln', $sx['laeufe'][0]['s'], 36);
+    $r = $ue_reihe($cfgu, array(array(0, 900), array(13, 1212), array(30, 900), array(36, 1.5)));
+    $sx = $ue_letzt($r);
+    $pruef('Laufstatistik bei Aenderung: Laufzeit 36 s aus vier Messwerten', $sx['laeufe'][0]['s'], 36);
+    $pruef('Laufstatistik bei Aenderung: Median 900 W nach Zeitanteil, nicht nach Zahl der Werte', $sx['laeufe'][0]['median'], 900);
+    $sx = array();
+    for ($i = 0; $i < 25; $i++) {
+        $sx = pw_schritt(array('watt' => 900, 'tag' => '2026-11-21'), $cfgu, $sx, 8000000.0 + $i * 100);
+        $sx = pw_schritt(array('watt' => 1.5, 'tag' => '2026-11-21'), $cfgu, $sx, 8000000.0 + $i * 100 + 30);
+    }
+    $pruef('Laufstatistik: hoechstens 20 Laeufe', count($sx['laeufe']), 20);
+    $seg = array();
+    for ($i = 0; $i < 100; $i++) { $seg = pw_lauf_seg_dazu($seg, 800 + $i, 1); }
+    $pruef('Laufstatistik: hoechstens 60 Wattwerte je Lauf', count($seg), 60);
+    $pruef('Laufstatistik: dabei geht keine Sekunde verloren', array_sum(array_map(function ($x) { return $x[1]; }, $seg)), 100);
+    $u = pw_leistung_urteil(array(array('median' => 900, 'spitze' => 1212), array('median' => 905, 'spitze' => 950),
+                                  array('median' => 910, 'spitze' => 960)), 1092);
+    $pruef('Urteil: typisch 905 W, eine Spitze ueber 1092 W - passt', $u['passt'] ? 1 : 0, 1);
+    $pruef('Urteil: typisch ist der Median der Laeufe', $u['typisch'], 905);
+    $u = pw_leistung_urteil(array(array('median' => 1000, 'spitze' => 1050)), 1092);
+    $pruef('Urteil: typisch ueber 90 % der Grenze - passt nicht', $u['passt'] ? 1 : 0, 0);
+    $u = pw_leistung_urteil(array(array('median' => 900, 'spitze' => 1212), array('median' => 900, 'spitze' => 1250),
+                                  array('median' => 900, 'spitze' => 950)), 1092);
+    $pruef('Urteil: Spitze in 2 von 3 Laeufen ueber der Grenze - passt nicht', $u['passt'] ? 1 : 0, 0);
+    $u = pw_leistung_urteil(array(array('median' => 1500, 'spitze' => 1600)), 0);
+    $pruef('Urteil: Grenze 0 (aus) - nichts zu vergleichen', $u['passt'] ? 1 : 0, 1);
 
     if ($ausgabe) {
         echo sprintf("\nPumpenwacht-Kern %s: %d Faelle geprueft, %d Fehlschlaege.\n",

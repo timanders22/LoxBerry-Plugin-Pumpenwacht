@@ -42,39 +42,11 @@ require_once __DIR__ . '/sicherung.php';
  */
 function pw_fassung()
 {
-    static $v = null;
-    if ($v !== null) { return $v; }
-    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'pluginversion')) {
-        /* Ueber den Ordnernamen fragen (Regeln/03): ohne Argument haengt die
-         * Antwort am ersten eingebundenen Skript - am Geraet gemessen
-         * 17.09.2026: aus einem fremden Einstieg (php -r) NULL, mit dem
-         * Ordnernamen die installierte Fassung. Installiert liegt diese Datei
-         * unter webfrontend/html(auth)/plugins/<ordner>/. */
-        $aus = @LBSystem::pluginversion(basename(__DIR__));
-        if ($aus !== null && trim((string) $aus) !== '') {
-            $v = trim((string) $aus);
-            return $v;
-        }
-    }
-    /* Im entpackten Bauordner liegt die plugin.cfg zwei Ebenen ueber
-     * webfrontend/html. Auf dem Geraet liegt sie NIRGENDS - LoxBerry
-     * installiert sie nicht mit; dort traegt LBSystem die Antwort. */
-    foreach (array(dirname(dirname(__DIR__)) . '/plugin.cfg',
-                   dirname(dirname(dirname(__DIR__))) . '/plugin.cfg') as $kand) {
-        if (!is_file($kand)) { continue; }
-        foreach (file($kand, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $zeile) {
-            if (preg_match('/^VERSION\s*=\s*([0-9][0-9A-Za-z.\-]*)/', trim($zeile), $m)) {
-                $v = $m[1];
-                return $v;
-            }
-        }
-    }
-
-    /* Nichts gefunden. Dann steht hier NICHTS - und nicht eine Nummer,
-     * die es nie gab. "0.9.x" in der Sicherungsdatei saehe aus wie eine
-     * Fassung und waere doch nur geraten. */
-    $v = '';
-    return $v;
+    /* 21.11.2026 (Fassung im Titel, Entscheidung des Hausherrn): aus dem gemeinsamen Stueck fassung.php,
+     * fuer alle Linien gleich - LBSystem::pluginversion(<ordner>), Plugin-Datenbank ueber den Ordnernamen,
+     * plugin.cfg des entpackten Archivs; nichts gefunden: ''. */
+    require_once __DIR__ . '/fassung.php';
+    return plugin_fassung(__DIR__);
 }
 
 function pw_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
@@ -211,6 +183,8 @@ function pw_grenzen()
         'trocken_w'          => array('art' => 'zahl', 'min' => 0,  'max' => 5000),
         'trocken_s'          => array('art' => 'zahl', 'min' => 5,  'max' => 3600),
         'ueberlast_w'        => array('art' => 'zahl', 'min' => 0,  'max' => 5000),
+        /* 1.0.27: Mindestdauer der Ueberlast in GANZEN Sekunden (0 = sofort). */
+        'ueberlast_s'        => array('art' => 'zahl', 'min' => 0,  'max' => 600, 'ganz' => true),
         'dauerlauf_s'        => array('art' => 'zahl', 'min' => 0,  'max' => 86400),
         'starts_h'           => array('art' => 'zahl', 'min' => 0,  'max' => 1000),
         'anlauf_s'           => array('art' => 'zahl', 'min' => 0,  'max' => 3600),
@@ -292,6 +266,12 @@ function pw_wert_pruefen($schluessel, $wert)
         if (!is_finite($f) || $f < $r['min'] || $f > $r['max']) {
             return array(null, 'bereich:' . $r['min'] . ':' . $r['max']);
         }
+        /* 1.0.27: wo die Grenze ganze Zahlen verlangt (ueberlast_s), wird 12,5
+         * abgewiesen und gemeldet, nicht gerundet. */
+        if (!empty($r['ganz'])) {
+            if (floor($f) !== $f) { return array(null, 'ganz:' . $r['min'] . ':' . $r['max']); }
+            return array((int) $f, '');
+        }
         return array($f, '');
     }
     if ($r['art'] === 'haken') {
@@ -339,6 +319,9 @@ function pw_vorgaben()
         'trocken_w'       => 0,
         'trocken_s'       => 30,
         'ueberlast_w'     => 0,
+        /* 1.0.27: 0 = sofort, wie bis 1.0.26 - neue Funktionen ab Werk aus. Die
+         * Modelltabelle traegt dafuer keine Vorgabe. */
+        'ueberlast_s'     => 0,
         'dauerlauf_s'     => 1800,
         'starts_h'        => 25,
         // 0 = aus. Die Anlaufueberwachung braucht ein Anforderungssignal aus
@@ -1305,6 +1288,18 @@ function pw_verarbeiten($watt, $cfg, $jetzt = null, $quelle = 'endpunkt',
         if (isset($neu['vortag'])) {
             pw_tag_ablegen($neu['vortag'], isset($cfg['id']) ? $cfg['id'] : null);
             unset($neu['vortag']);
+        }
+        /* 1.0.27: kuerzere Ueberschreitungen der Ueberlast-Grenze als die Mindestdauer - EINE Zeile je Lauf,
+         * am Laufende, mit der laengsten (pw_schritt, ueber_meldung). Der Schluessel gehoert nicht in den Zustand. */
+        if (isset($neu['ueber_meldung'])) {
+            $pw_um = (array) $neu['ueber_meldung'];
+            $pw_umn = (int) pw_zahl(isset($pw_um['anzahl']) ? $pw_um['anzahl'] : 0, 0.0);
+            pw_log(sprintf('Ueberlast-Spitze %d W fuer %d s, unter der Mindestdauer von %d s - kein Befund%s',
+                           (int) round(pw_zahl(isset($pw_um['spitze_w']) ? $pw_um['spitze_w'] : 0, 0.0)),
+                           (int) round(pw_zahl(isset($pw_um['dauer_s']) ? $pw_um['dauer_s'] : 0, 0.0)),
+                           (int) round(pw_zahl(isset($pw_um['mindest_s']) ? $pw_um['mindest_s'] : 0, 0.0)),
+                           $pw_umn > 1 ? sprintf(' (%d Spitzen in diesem Lauf, genannt die laengste)', $pw_umn) : ''));
+            unset($neu['ueber_meldung']);
         }
         /* Protokoll: Befundwechsel und Sperren, wie bisher - und seit 0.9.8
          * auch das VERSCHWINDEN einer Sperre und ein Uhrsprung. */
@@ -2828,6 +2823,17 @@ function pw_sicherung_spaete_schluessel()
 }
 
 /**
+ * 1.0.27: Die Schluessel EINER Pumpe, die eine aeltere Sicherung dieser Linie noch nicht
+ * kennen konnte. Fehlen sie in einer Pumpe der Datei, behalten sie den geltenden Wert
+ * dieser Pumpe, und die Meldung nennt sie; eine Pumpe, die es hier nicht gibt, bekommt
+ * beim naechsten Lesen die Vorgabe (pw_cfg_vervollstaendigen()). ueberlast_s seit 1.0.27.
+ */
+function pw_sicherung_spaete_pumpenschluessel()
+{
+    return array('ueberlast_s');
+}
+
+/**
  * 1.0.25: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
  *
  * - Kennzeichen pumpenwacht (seit 0.9.8 im Kopf jeder Sicherung, Namensform).
@@ -2835,7 +2841,8 @@ function pw_sicherung_spaete_schluessel()
  *   Positivliste wie im Formular, und wird in dessen Normalform uebernommen.
  * - pumpen: eine Liste, zugeordnet ueber die Kennung id (Regel 3 des Moduls je Pumpe).
  *   Jede Pumpe traegt jeden Schluessel aus pw_vorgaben_pumpe() - so schreibt es jede
- *   Fassung seit 1.0.0 -, sonst wird die Datei abgewiesen ('pflicht'). Kennung,
+ *   Fassung seit 1.0.0 -, sonst wird die Datei abgewiesen ('pflicht'); ausgenommen die
+ *   spaeten Schluessel einer Pumpe (pw_sicherung_spaete_pumpenschluessel(), 1.0.27). Kennung,
  *   Doppel, Praefixe und Rueckkopplung des Quell-Themas wie bis 1.0.24 geprueft.
  * - tts: der Block der gemeinsamen Sprachausgabe ohne Sprechtoken; traegt die Datei
  *   eines, wird sie abgewiesen. ansage_regeln: geprueft mit ansage_regeln_wert().
@@ -2878,7 +2885,10 @@ function pw_sicherung_beschreibung($roh = null)
     }
     $pk = array();
     foreach (array_keys(pw_vorgaben_pumpe()) as $n) {
-        $pk[$n] = array('art' => 'wert', 'fehlt' => 'pflicht');
+        /* 1.0.27: ein Schluessel einer Pumpe, den aeltere Sicherungen noch nicht kennen konnten, behaelt seinen
+         * geltenden Wert (Regeln/05, Regel 6) - sonst wiese 1.0.27 jede Sicherung bis 1.0.26 ab. */
+        $pk[$n] = array('art' => 'wert',
+                        'fehlt' => in_array($n, pw_sicherung_spaete_pumpenschluessel(), true) ? 'behalten' : 'pflicht');
     }
     $schluessel = array(
         'pumpen' => sicherung_liste(array_keys(pw_vorgaben_pumpe()), 'id', $pk)
@@ -3319,7 +3329,41 @@ function pw_selbstpruefung($cfg = null)
     if ($tr > 0 && $tr <= $an) { $widerspruch[] = 'trocken_w <= an_w'; }
     if ($ue > 0 && $ue <= $an) { $widerspruch[] = 'ueberlast_w <= an_w'; }
     if ($tr > 0 && $ue > 0 && $tr >= $ue) { $widerspruch[] = 'trocken_w >= ueberlast_w'; }
+    /* 1.0.27: eine Mindestdauer ohne Grenze wirkt nicht. */
+    if (pw_ueberlast_s($cfg) > 0 && $ue <= 0) { $widerspruch[] = 'ueberlast_s ohne ueberlast_w'; }
     $add('PRUEF.SCHWELLEN', $widerspruch ? 0 : 1, implode(', ', $widerspruch));
+
+    /* 1.0.27: Ueberschreitungen der Ueberlast-Grenze heute (pw_schritt, ueber_tag_*), damit sich die
+     * Mindestdauer an der eigenen Anlage einstellen laesst. Eine Auskunft, kein Urteil: Haken bei
+     * eingeschalteter Erkennung, Strich bei Grenze 0. Gezaehlt sind abgeschlossene Ueberschreitungen. */
+    $pw_heute = (isset($stand['tag']) && (string) $stand['tag'] === date('Y-m-d'));
+    $pw_un = $pw_heute ? (int) pw_zahl(isset($stand['ueber_tag_n']) ? $stand['ueber_tag_n'] : 0, 0.0) : 0;
+    $pw_us = (int) pw_ueberlast_s($cfg);
+    if ($ue <= 0) {
+        $add('PRUEF.UEBERLAST_SPITZE', 2, pw_t('PRUEF.UE_AUS'));
+    } elseif ($pw_un === 0) {
+        $add('PRUEF.UEBERLAST_SPITZE', 1, pw_t('PRUEF.UE_KEINE'));
+    } else {
+        $pw_ul = (int) round(pw_zahl(isset($stand['ueber_tag_s']) ? $stand['ueber_tag_s'] : 0, 0.0));
+        $pw_uw = (int) round(pw_zahl(isset($stand['ueber_tag_w']) ? $stand['ueber_tag_w'] : 0, 0.0));
+        $pw_uk = (int) pw_zahl(isset($stand['ueber_tag_kurz']) ? $stand['ueber_tag_kurz'] : 0, 0.0);
+        $add('PRUEF.UEBERLAST_SPITZE', 1, $pw_us > 0
+             ? sprintf(pw_t('PRUEF.UE_HEUTE'), $pw_un, $pw_ul, $pw_uw, $pw_uk, $pw_us)
+             : sprintf(pw_t('PRUEF.UE_SOFORT'), $pw_un, $pw_ul, $pw_uw));
+    }
+
+    /* 1.0.27: Passt die gemessene Leistung der letzten Laeufe zur Grenze (pw_leistung_urteil())?
+     * Kreuz nur als Hinweis - am Verhalten aendert die Zeile nichts. Anlass: eine Sumpfpumpe mit dem
+     * Modell einer anderen Pumpe eingetragen (Hausherr, 21.11.2026). */
+    $pw_lu = pw_leistung_urteil(isset($stand['laeufe']) ? $stand['laeufe'] : array(), $ue);
+    if ($pw_lu['n'] === 0) {
+        $add('PRUEF.LEISTUNG', 2, pw_t('PRUEF.LS_KEINE'));
+    } else {
+        $add('PRUEF.LEISTUNG', $pw_lu['passt'] ? 1 : 0,
+             sprintf(pw_t('PRUEF.LS_TEXT'), $pw_lu['n'], (int) round($pw_lu['typisch']), (int) round($pw_lu['spitze']),
+                     $ue > 0 ? ((int) round($ue) . ' W') : pw_t('PRUEF.LS_AUS'), $pw_lu['reissen'])
+             . ($pw_lu['passt'] ? '' : ' ' . pw_t('PRUEF.LS_HINWEIS')));
+    }
 
     $grenze = (int) pw_zahl($cfg['starts_h'], 0.0);
     $add('PRUEF.STARTS_DECKEL', ($grenze <= pw_starts_deckel($cfg)) ? 1 : 0,
@@ -5099,7 +5143,8 @@ function pw_alarm_merken($id, $neu, $jetzt)
  * Nr. 36 b (Stufe 2, seit 1.0.7): Ansage bei Alarm ueber die gemeinsame Sprachausgabe
  * ==================================================================
  *
- * Ab Werk aus (Ausgabeart 'aus'). Angesagt wird der BEGINN eines Alarms (Befund ungleich ok, wie
+ * Ab Werk aus (Ausgabeart 'aus'). Angesagt wird der BEGINN eines Alarms - seit 1.0.27 jeder, auch ein beim Takt
+ * schon geschlossener (pw_ansage_takt) - (Befund ungleich ok, wie
  * bei SignalBot) - nie ein Wert im Takt. Je Alarmart abwaehlbar (ansage_<befund>), hoechstens eine
  * Ansage je Pumpe und Art in 30 min (Wiederholsperre); eine gesperrte Ansage wird NICHT nachgeholt.
  * Aus dem Minutentakt, NACH dem Weg nach Loxone und nach SignalBot; beide laufen unabhaengig davon.
@@ -5389,21 +5434,36 @@ function pw_ansage_takt($voll, $jetzt = null)
         $pumpen = array();
         foreach (pw_pumpe_ids($voll) as $id) {
             $p = pw_pumpe($voll, $id);
-            $akt = pw_alarm_lesen($id)['aktuell'];
+            $ae = pw_alarm_lesen($id);
+            $akt = $ae['aktuell'];
             $gemerkt = isset($alt[$id]) ? (int) $alt[$id] : 0;
             $pumpen[$id] = $gemerkt;
-            if ($akt === null || $akt['nr'] === $gemerkt || $akt['ende'] > 0) {
-                /* kein Alarm, schon behandelt, oder schon vorbei: nichts ansagen */
-                if ($akt !== null) { $pumpen[$id] = $akt['nr']; }
-                continue;
+            /* 1.0.27 (Entscheidung des Hausherrn 21.11.2026, "Ja, jeden Alarm ansagen"): angesagt wird der EINTRITT eines
+             * Alarms - jede Nummer in alarm.json, die groesser ist als die zuletzt behandelte, genau einmal, auch wenn der
+             * Alarm beim Minutentakt schon wieder vorbei ist. Bis 1.0.26 nur ein beim Takt noch OFFENER Alarm: eine
+             * Ueberlast von 17 s zwischen zwei Takten blieb stumm. alarm.json haelt je Pumpe zwei Alarme (aktuell, vorher);
+             * mehr als zwei zwischen zwei Takten kann dieser Weg nicht sehen. Ohne Merker (gerade eingeschaltet) wie
+             * bisher: nur ein offener Alarm, sonst kaemen beim Einschalten alte. Eine kleinere Nummer als die gemerkte
+             * heisst, alarm.json begann neu (Pumpe entfernt und wieder angelegt) - dann zaehlt nur der aktuelle. */
+            $neu_alarme = array();
+            if ($akt !== null) {
+                if (!isset($alt[$id]) || $akt['nr'] < $gemerkt) {
+                    if ($akt['ende'] <= 0) { $neu_alarme[] = $akt; }
+                } else {
+                    foreach (array($ae['vorher'], $akt) as $x) {
+                        if ($x !== null && $x['nr'] > $gemerkt) { $neu_alarme[] = $x; }
+                    }
+                }
+                $pumpen[$id] = $akt['nr'];
             }
-            $pumpen[$id] = $akt['nr'];
-            $art = $akt['art'];
-            if (!isset($anl[$art]) || empty($voll[$anl[$art]])) { continue; }    // abgewaehlt
-            /* 1.0.16: Sperre und Nachtruhe stehen im Stamm. Trockenlauf und Ueberlast schaden der Pumpe, sie sprechen auch nachts. */
-            $legen[] = array('schluessel' => 'alarm|' . $id . '|' . $art, 'text' => pw_ansage_text($art, pw_pumpe_name($p)),
-                             'dringend' => in_array($art, array(PW_TROCKEN, PW_UEBERLAST), true));
-            $n++;
+            foreach ($neu_alarme as $x) {
+                $art = $x['art'];
+                if (!isset($anl[$art]) || empty($voll[$anl[$art]])) { continue; }    // abgewaehlt
+                /* 1.0.16: Sperre und Nachtruhe stehen im Stamm. Trockenlauf und Ueberlast schaden der Pumpe, sie sprechen auch nachts. */
+                $legen[] = array('schluessel' => 'alarm|' . $id . '|' . $art, 'text' => pw_ansage_text($art, pw_pumpe_name($p)),
+                                 'dringend' => in_array($art, array(PW_TROCKEN, PW_UEBERLAST), true));
+                $n++;
+            }
         }
         pw_ansage_legen($legen, $jetzt);
         if (!pw_json_schreiben($datei, array('pumpen' => $pumpen), 0600)) {
@@ -5669,6 +5729,31 @@ function pw_signal_takt($voll, $jetzt = null)
                 if ($ep === null || $ep['ende'] > 0) {
                     $melden('ende', $p, $id, $g['art'], $g['beginn'], $ep !== null ? $ep['ende'] : $jetzt);
                     $g['ende'] = 1;
+                }
+            }
+            /* 1b. 1.0.27 (Entscheidung des Hausherrn 21.11.2026 "Ja, jeden Alarm ansagen", auf SignalBot erstreckt): ein
+             * Alarm, der zwischen zwei Takten begann und schon vom naechsten abgeloest wurde (alarm.json 'vorher', Nummer
+             * groesser als die gemeldete), wird ebenfalls gemeldet - Beginn und Ende, mit derselben Bremse je Art. Bis
+             * 1.0.26 sah dieser Weg nur 'aktuell', und der erste von zwei Alarmen zwischen zwei Takten blieb ungemeldet.
+             * Ohne Merker (gerade eingeschaltet) und bei neu begonnener alarm.json (kleinere Nummer) wie bisher: nur der
+             * aktuelle. Mehr als zwei Alarme zwischen zwei Takten sieht der Weg nicht (alarm.json haelt zwei). */
+            $vor = $e['vorher'];
+            if (!$erstmals && $vor !== null && $vor['nr'] > $g['nr'] && ($akt === null || $vor['nr'] < $akt['nr'])) {
+                $schl = $id . '|' . $vor['art'];
+                $zuletzt = isset($bremse[$schl]) ? (int) $bremse[$schl] : 0;
+                $frei = ($zuletzt <= 0 || ($jetzt - $zuletzt) >= PW_SIGNAL_BREMSE_S || ($jetzt - $zuletzt) < -300);
+                if (!$frei) {
+                    pw_log('SignalBot: Alarm ' . $vor['art'] . ' (' . $id . ') innerhalb von 30 min nach der letzten '
+                           . 'Meldung dieser Art - nicht gemeldet, und er ist inzwischen vorbei.');
+                    $g = array('nr' => $vor['nr'], 'art' => $vor['art'], 'beginn' => $vor['beginn'], 'ende' => 1, 'gebremst' => 0);
+                } elseif (!$tot) {
+                    $bremse[$schl] = $jetzt;
+                    $melden('beginn', $p, $id, $vor['art'], $vor['beginn'], 0);
+                    $g = array('nr' => $vor['nr'], 'art' => $vor['art'], 'beginn' => $vor['beginn'], 'ende' => 0, 'gebremst' => 0);
+                    if (!$tot) {
+                        $melden('ende', $p, $id, $vor['art'], $vor['beginn'], $vor['ende'] > 0 ? $vor['ende'] : $jetzt);
+                        $g['ende'] = 1;
+                    }
                 }
             }
             /* 2. Der Beginn eines Alarms, der noch nicht gemeldet ist. */

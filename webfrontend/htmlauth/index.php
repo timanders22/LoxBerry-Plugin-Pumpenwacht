@@ -96,7 +96,7 @@ function pw_eingaben_sammeln($form, array $falsch, $pid)
     };
     $felder = array(
         'settings' => array('name', 'art', 'ruht_s', 'modell', 'quelle', 'quelle_topic', 'an_w',
-                            'trocken_w', 'trocken_s', 'ueberlast_w', 'dauerlauf_s', 'starts_h',
+                            'trocken_w', 'trocken_s', 'ueberlast_w', 'ueberlast_s', 'dauerlauf_s', 'starts_h',
                             'anlauf_s', 'stale_s', 'signal_ordner', 'signal_an'),
         'mqtt'     => array('mqtt_topic'),
         'test'     => array('watt'));
@@ -487,14 +487,15 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
         'ruht_s' => 'PUMPE.L_RUHT_S', 'quelle' => 'EINST.L_QUELLE',
         'quelle_topic' => 'EINST.L_QUELLE_TOPIC', 'an_w' => 'EINST.L_AN_W',
         'trocken_w' => 'EINST.L_TROCKEN_W', 'trocken_s' => 'EINST.L_TROCKEN_S',
-        'ueberlast_w' => 'EINST.L_UEBERLAST_W', 'dauerlauf_s' => 'EINST.L_DAUERLAUF_S',
+        'ueberlast_w' => 'EINST.L_UEBERLAST_W', 'ueberlast_s' => 'EINST.L_UEBERLAST_S',
+        'dauerlauf_s' => 'EINST.L_DAUERLAUF_S',
         'starts_h' => 'EINST.L_STARTS_H', 'anlauf_s' => 'EINST.L_ANLAUF_S',
         'stale_s' => 'EINST.L_STALE_S',
         'signal_ordner' => 'EINST.L_SIGNAL_ORDNER', 'signal_an' => 'EINST.L_SIGNAL_AN');
     /* Dieselbe Positivliste wie die Sicherung - eine zweite Wahrheit ueber
      * zulaessige Werte gibt es nicht (pw_grenzen). */
     foreach (array('name', 'modell', 'art', 'ruht_s', 'quelle', 'quelle_topic',
-                   'an_w', 'trocken_w', 'trocken_s', 'ueberlast_w',
+                   'an_w', 'trocken_w', 'trocken_s', 'ueberlast_w', 'ueberlast_s',
                    'dauerlauf_s', 'starts_h', 'anlauf_s', 'stale_s',
                    'signal_ordner', 'signal_an') as $pw_f) {
         /* Ein Feld, das das Formular GAR NICHT mitschickt, behaelt seinen
@@ -529,6 +530,10 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
         if (strncmp($pw_grund, 'bereich:', 8) === 0) {
             list(, $pw_min, $pw_max) = explode(':', $pw_grund, 3);
             $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_BEREICH'), $pw_bez, $pw_min, $pw_max);
+        } elseif (strncmp($pw_grund, 'ganz:', 5) === 0) {
+            /* 1.0.27: ganze Sekunden verlangt (ueberlast_s) - 12,5 wird abgewiesen, nicht gerundet. */
+            list(, $pw_min, $pw_max) = explode(':', $pw_grund, 3);
+            $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_GANZ'), $pw_bez, $pw_min, $pw_max);
         } elseif ($pw_grund === 'keine_zahl') {
             $pw_beanstandet[] = sprintf(pw_t('EINST.FEHLER_ZAHL'), $pw_bez);
         } else {
@@ -883,7 +888,8 @@ $pw_q = '&amp;pumpe=' . rawurlencode($pw_pid);
 $pw_qf = '<input data-role="none" type="hidden" name="pumpe" value="'
        . pw_e($pw_pid) . '">';
 
-if ($pw_frame) { LBWeb::lbheader(pw_t('ALLG.TITEL') . ' ' . pw_fassung(), 'https://wiki.loxberry.de/', 'help.html'); }
+require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+if ($pw_frame) { LBWeb::lbheader(plugin_kopftitel(pw_t('ALLG.TITEL'), __DIR__), 'https://wiki.loxberry.de/', 'help.html'); }
 
 ?>
 <style>
@@ -1182,6 +1188,7 @@ $pw_zahlfelder = array(
     array('trocken_w',   'EINST.L_TROCKEN_W',   'EINST.H_TROCKEN_W'),
     array('trocken_s',   'EINST.L_TROCKEN_S',   'EINST.H_TROCKEN_S'),
     array('ueberlast_w', 'EINST.L_UEBERLAST_W', 'EINST.H_UEBERLAST_W'),
+    array('ueberlast_s', 'EINST.L_UEBERLAST_S', 'EINST.H_UEBERLAST_S'),
     array('dauerlauf_s', 'EINST.L_DAUERLAUF_S', 'EINST.H_DAUERLAUF_S'),
     array('starts_h',    'EINST.L_STARTS_H',    'EINST.H_STARTS_H'),
     array('anlauf_s',    'EINST.L_ANLAUF_S',    'EINST.H_ANLAUF_S'),
