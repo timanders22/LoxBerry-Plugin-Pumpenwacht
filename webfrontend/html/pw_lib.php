@@ -14,10 +14,12 @@ require_once __DIR__ . '/pw_regel.php';
  * mit weiteren Ausgabezielen, pw_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 1.0.29)
 /* 1.0.25: Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
  * 18.11.2026 "Ja, umbauen"): Einstellungen sichern und zurueckspielen nach pw_sicherung_beschreibung(). Liegt
  * neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.0.29, Regeln/07)
 
 /**
  * Die laufende Fassung des Plugins - aus EINER Quelle.
@@ -374,6 +376,7 @@ function pw_vorgaben()
         'tts'             => ansage_werk_block(),
         'ansage_regeln'   => ansage_regeln_vorgaben(),
         'ansage_token_herkunft' => array(),
+        'meldung'         => meld_vorgaben(pw_meld_haken_vorgabe(), pw_meld_haken_vorgabe()),     // 1.0.29: Meldungen an SignalBot, ab Werk aus
     );
 }
 
@@ -401,7 +404,9 @@ function pw_global_schluessel()
     return array('aktionstoken', 'formgeheim', 'mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern',
                  'signal_ein', 'signal_dringend', 'signal_ordner', 'signal_token', 'signal_an',
                  /* Nr. 36 b: die Ansage gilt fuer das Plugin; der Satz nennt die Pumpe. */
-                 'tts', 'ansage_regeln', 'ansage_token_herkunft', 'ansage_trockenlauf', 'ansage_ueberlast', 'ansage_dauerlauf', 'ansage_schaltspiel', 'ansage_kein_anlauf', 'ansage_still', 'ansage_ruht');
+                 'tts', 'ansage_regeln', 'ansage_token_herkunft', 'ansage_trockenlauf', 'ansage_ueberlast', 'ansage_dauerlauf', 'ansage_schaltspiel', 'ansage_kein_anlauf', 'ansage_still', 'ansage_ruht',
+                 /* 1.0.29: der Block 'meldung' des gemeinsamen Moduls gilt fuer das Plugin. */
+                 'meldung');
 }
 
 /** Die Werksvorgaben EINER Pumpe. */
@@ -897,9 +902,13 @@ function pw_config($erzeugen = true)
     return pw_wandern(pw_json_lesen($p['config']));
 }
 
-function pw_config_speichern($cfg)
+function pw_config_speichern($cfg, $lade_behalten = true)
 {
     $p = pw_paths();
+    /* 1.0.29 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld (die Kennung einer Pumpe), das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten
+     * Wert. Nicht beim Zurueckspielen und nicht beim Knopf "Angezeigte Werte uebernehmen" ($lade_behalten = false). */
+    if ($lade_behalten && is_array($cfg)) { $cfg = pw_lade_behalten($cfg); }
     /* Fail closed: faellt EIN Wert durch, wird gar nichts geschrieben -
      * nicht "den einen weglassen".
      *
@@ -926,6 +935,10 @@ function pw_config_speichern($cfg)
         if ($k !== 'pumpen' && !array_key_exists($k, $pw_bekannt)) { continue; }
         if ($k === 'ansage_regeln' || $k === 'ansage_token_herkunft') {     // 1.0.16: Felder des Stamms, geprueft beim Lesen
             if (!is_array($v)) { return false; }
+            continue;
+        }
+        if ($k === 'meldung') {     // 1.0.29: der Block des gemeinsamen Moduls meldung.php, fail closed
+            if (meld_block_pruefen($v, pw_meld_anlaesse())) { return false; }
             continue;
         }
         if ($k === 'tts') {
@@ -986,6 +999,59 @@ function pw_config_speichern($cfg)
  *
  * Rueckgabe: array(Konfiguration, fehlten[], fremd[]).
  */
+/* ==================================================================
+ * Lade-Beanstandungen (1.0.29; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * pw_wandern() macht aus einer Kennung, die nicht passt, eine passende (sie steht in Eingangsnamen der Loxone-Vorlage
+ * und im Dateinamen des Endpunktspeichers). Das bleibt - aber es wird gemeldet (Reiter Test rot, Seite gelb, einmal ins
+ * Protokoll) und nie in die Datei zurueckgeschrieben.
+ * ================================================================== */
+
+/** Die rohen Werte der Konfigurationsdatei (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function pw_lade_roh()
+{
+    $d = pw_inhalt_oder_null(pw_paths()['config']);
+    return is_array($d) ? $d : null;
+}
+
+/** Die Beschreibung fuer die Lade-Beanstandungen; geheim sind formgeheim, signal_token und die Sprechtoken
+ *  (aktionstoken immer). $maskiert = false fuer Tabelle und Meldungen (die Seite maskiert bei der Ausgabe). */
+function pw_lade_b($maskiert = true)
+{
+    $b = pw_sicherung_beschreibung();
+    $b['geheim'] = array_merge(array('formgeheim', 'signal_token'), array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()));
+    $b['e'] = $maskiert ? 'pw_e' : function ($s) { return (string) $s; };
+    return $b;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst pw_config(false)). */
+function pw_lade_beanstandungen($cfg = null, $maskiert = true)
+{
+    $d = pw_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(pw_lade_b($maskiert), $d, is_array($cfg) ? $cfg : pw_config(false));
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function pw_lade_behalten(array $cfg)
+{
+    $d = pw_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = pw_config(false);
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(pw_lade_b(false), $d, $v));
+    return $cfg;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function pw_lade_melden(array $beanst)
+{
+    $d = pw_paths()['datadir'];
+    if ($d === '' || !is_dir($d)) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        pw_log(sicherung_lade_protokollzeile($beanst));
+    }
+}
+
 function pw_cfg_vervollstaendigen()
 {
     $p = pw_paths();
@@ -1905,6 +1971,9 @@ function pw_publizieren($stand, $cfg, $jetzt = null, $erzwingen = false)
     $felder = pw_felder($stand, $cfg, $jetzt);
     $zaehler = ((int) pw_zahl(isset($stand['status_zaehler']) ? $stand['status_zaehler'] : -1, -1.0) + 1) % 1000;
     $praefix = pw_mqtt_thema($cfg);
+    // 1.0.29: Praefix dieser Pumpe im gemeinsamen Bereich? melden (je Pumpe eine Merkdatei), nicht anhalten
+    pw_praefix_haus_melden(array('pumpen' => array($cfg)), pw_paths()['datadir'] . '/praefix_haus_gemeldet_'
+        . preg_replace('/[^A-Za-z0-9_-]/', '_', isset($cfg['id']) ? (string) $cfg['id'] : 'pumpe') . '.txt');
     $letzte = (isset($stand['mqtt_letzte']) && is_array($stand['mqtt_letzte'])) ? $stand['mqtt_letzte'] : array();
     $voll_ts = pw_zahl(isset($stand['mqtt_voll_ts']) ? $stand['mqtt_voll_ts'] : 0, 0.0);
     $alt_praefix = isset($stand['mqtt_praefix']) ? (string) $stand['mqtt_praefix'] : '';
@@ -2819,7 +2888,8 @@ function pw_sicherung_spaete_schluessel()
     return array('signal_ein', 'signal_dringend', 'signal_ordner', 'signal_token', 'signal_an',
                  'tts', 'ansage_trockenlauf', 'ansage_ueberlast', 'ansage_dauerlauf', 'ansage_schaltspiel',
                  'ansage_kein_anlauf', 'ansage_still', 'ansage_ruht',
-                 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'ansage_regeln');
+                 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'ansage_regeln',
+                 'meldung');     // 1.0.29: aeltere Sicherungen kennen den Block nicht - er behaelt den geltenden Wert
 }
 
 /**
@@ -2925,6 +2995,7 @@ function pw_sicherung_beschreibung($roh = null)
                          $g = '';
                          return ansage_regeln_wert($w, $g);
                      }),
+        'meldung' => meld_sicherung_knoten(pw_meld_anlaesse(), pw_meld_k()),     // 1.0.29
     );
     /* Normalform wie im Formular: der Wert, den pw_wert_pruefen() zurueckgibt. */
     foreach (array_keys(pw_grenzen()) as $k) {
@@ -3022,6 +3093,14 @@ function pw_sicherung_quer($neu, $r = null, $daten = null)
     $aus = array();
     if (!is_array($neu)) { return $aus; }
     foreach (pw_praefixe_pruefen($neu) as $d) { $aus[] = array('pumpen', sprintf(pw_t('EINST.SICH_PRAEFIX'), $d)); }
+    /* 1.0.29: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+    foreach ((isset($neu['pumpen']) && is_array($neu['pumpen'])) ? $neu['pumpen'] : array() as $pw_p) {
+        if (is_array($pw_p) && isset($pw_p['mqtt_topic']) && is_string($pw_p['mqtt_topic'])
+            && hb_bereich(pw_mqtt_thema_saeubern($pw_p['mqtt_topic'])) !== '') {
+            $aus[] = array('pumpen', pw_e($pw_p['mqtt_topic']) . ': ' . pw_e(sprintf(pw_t('HAUSBEREICH.SICH_W'),
+                hb_bereich(pw_mqtt_thema_saeubern($pw_p['mqtt_topic'])))));
+        }
+    }
     foreach (pw_quelle_kollisionen($neu) as $d) { $aus[] = array('pumpen', sprintf(pw_t('EINST.SICH_ECHO'), $d)); }
     return $aus;
 }
@@ -3241,6 +3320,9 @@ function pw_selbstpruefung($cfg = null)
      * anderen Pumpe kommt. */
     $pw_kollision = pw_praefixe_pruefen(pw_config());
     $add('PRUEF.PRAEFIXE', $pw_kollision ? 0 : 1, implode('; ', $pw_kollision));
+    // 1.0.29: faellt ein Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $pw_hb = pw_pruef_praefix_haus(pw_config());
+    $add('HAUSBEREICH.F_TEST', $pw_hb[0] === -1 ? 2 : $pw_hb[0], $pw_hb[1]);
 
     /* Gehoert JEDE eintreffende Zeile einer Pumpe?
      *
@@ -3451,6 +3533,12 @@ function pw_selbstpruefung($cfg = null)
     /* --- Der Kern --- */
     list($kn, $kf) = pw_selbsttest(false);
     $add('PRUEF.KERN', $kf === 0 ? 1 : 0, $kn . ' / ' . $kf);
+    /* 1.0.29: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+     * nicht so gilt, wie er gespeichert ist. */
+    $pw_lb = pw_lade_b(false);
+    $pw_ladea = pw_lade_beanstandungen(null, false);
+    $add('SICHERUNG.K_LADE_FRAGE', $pw_ladea ? 0 : 1,
+        $pw_ladea ? implode(' ', sicherung_lade_saetze($pw_lb, $pw_ladea)) : sicherung_t('K_LADE_KEINE', $pw_lb));
 
     return $z;
 }
@@ -5349,6 +5437,8 @@ function pw_ansage_senden($jetzt = null)
         $conf = pw_config();
         pw_ansage_token_pflegen($conf);
         $conf = pw_config();
+        pw_meld_senden($frisch, $conf);     // 1.0.29: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = pw_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, pw_tts($conf), pw_ansage_regeln($conf), pw_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -5415,7 +5505,7 @@ function pw_ansage_takt($voll, $jetzt = null)
 {
     $jetzt = $jetzt === null ? time() : (int) $jetzt;
     $datei = pw_ansage_datei();
-    if (!pw_ansage_an($voll)) {
+    if (!pw_ansage_an($voll) && !pw_meld_aktiv($voll)) {     // 1.0.29: auch fuer die Meldung an SignalBot
         /* Aus: nichts sagen, nichts merken - sonst kaemen beim Einschalten alte Alarme. */
         if (is_file($datei)) { @unlink($datei); }
         return array(0, 0);
@@ -5458,9 +5548,10 @@ function pw_ansage_takt($voll, $jetzt = null)
             }
             foreach ($neu_alarme as $x) {
                 $art = $x['art'];
-                if (!isset($anl[$art]) || empty($voll[$anl[$art]])) { continue; }    // abgewaehlt
+                if (!isset($anl[$art]) || !pw_meld_will($art, $voll)) { continue; }    // abgewaehlt (Ansage und Meldung an SignalBot, 1.0.29)
                 /* 1.0.16: Sperre und Nachtruhe stehen im Stamm. Trockenlauf und Ueberlast schaden der Pumpe, sie sprechen auch nachts. */
-                $legen[] = array('schluessel' => 'alarm|' . $id . '|' . $art, 'text' => pw_ansage_text($art, pw_pumpe_name($p)),
+                $legen[] = array('schluessel' => 'alarm|' . $id . '|' . $art, 'anlass' => $art,     // 1.0.29: Anlass fuer Haken und Meldung
+                                 'text' => pw_ansage_text($art, pw_pumpe_name($p)),
                                  'dringend' => in_array($art, array(PW_TROCKEN, PW_UEBERLAST), true));
                 $n++;
             }
@@ -6456,4 +6547,179 @@ function pw_pruef_bruecke_einrichtung()
     if (!$aus) { return array(2, '-'); }
     $fehl = preg_grep('/^\[FEHL\]/', $aus);
     return array($fehl ? 0 : 1, implode(' | ', $fehl ? $fehl : array($aus[0], end($aus))));
+}
+
+/**
+ * 1.0.29 (Regeln/07): das Praefix, an dem die Zeile im Reiter Test und die Meldung urteilen - bei mehreren
+ * Pumpen das erste, das auf einen gemeinsamen Bereich unter haus/ faellt, sonst das der ersten Pumpe.
+ * $cfg ist die ganze Konfiguration (pumpen[]); gesaeubert wie beim Senden (pw_mqtt_thema_saeubern()).
+ */
+function pw_praefix_haus_wahl($cfg)
+{
+    $liste = (is_array($cfg) && isset($cfg['pumpen']) && is_array($cfg['pumpen'])) ? $cfg['pumpen'] : array();
+    $erst = '';
+    foreach ($liste as $p) {
+        if (!is_array($p)) {
+            continue;
+        }
+        $t = pw_mqtt_thema_saeubern(isset($p['mqtt_topic']) ? $p['mqtt_topic'] : 'pumpe');
+        if ($erst === '') {
+            $erst = $t;
+        }
+        if (hb_bereich($t) !== '') {
+            return $t;
+        }
+    }
+    return $erst !== '' ? $erst : 'pumpe';
+}
+
+/**
+ * 1.0.29 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function pw_pruef_praefix_haus($cfg)
+{
+    $p = pw_praefix_haus_wahl($cfg);
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        return array(0, sprintf(pw_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(pw_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 1.0.29: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function pw_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = pw_praefix_haus_wahl($cfg);
+    if ($merk === null) {
+        $merk = pw_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        pw_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('pw_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (1.0.29, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (pw_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (pw_meld_will()); der Sender trennt die Wege wieder (pw_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function pw_meld_anlaesse()
+{
+    return (function () { $bs = pw_befund_schluessel(); $a = array(); foreach (pw_ansage_anlaesse() as $b => $s) { $a[$b] = pw_t($bs[pw_befund_zahl($b)]); } return $a; })();
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function pw_meld_haken_vorgabe()
+{
+    return array('trockenlauf' => 1, 'ueberlast' => 1, 'dauerlauf' => 1, 'schaltspiel' => 1, 'kein_anlauf' => 1, 'still' => 1, 'ruht' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function pw_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(false); }
+    $anl = pw_ansage_anlaesse(); return isset($anl[$a]) && is_array($cfg) && !empty($cfg[$anl[$a]]);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function pw_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(false); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, pw_meld_anlaesse(), pw_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function pw_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(false); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, pw_meld_anlaesse(), pw_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function pw_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(pw_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function pw_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(false); }
+    return pw_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(pw_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function pw_meld_k()
+{
+    return pw_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function pw_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(false); }
+    $anl = pw_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !pw_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function pw_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(false); }
+    $b = pw_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, pw_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        pw_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function pw_meld_test()
+{
+    $r = meld_testmeldung(pw_meld_k());
+    pw_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function pw_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = pw_config(false); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = pw_meld_k();
+    $o = array();
+    /* 1.0.29: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(pw_meld_block($cfg), pw_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(pw_meld_block($cfg), pw_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }

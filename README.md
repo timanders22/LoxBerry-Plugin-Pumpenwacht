@@ -6,9 +6,15 @@ stellt daraus einen Befund und meldet ihn nach Loxone. Seit 1.0.0 für
 **mehrere Pumpen nebeneinander**, jede mit eigenen Schwellen, eigenem
 MQTT-Thema und eigenem Zustand.
 
-Version 1.0.28 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.0.29 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 1.0.29
+
+- **Themen-Präfix auf einem gemeinsamen Bereich (Entscheidung des Hausherrn 23.11.2026 „Nur gemeinsame Bereiche“):** Ein MQTT-Präfix, das einer der gemeinsamen Bereiche unter `haus/` ist oder darin beginnt (`haus/<bereich>` bzw. `haus/<bereich>/…` für abfahrt, abfuhr, alarm, ansage, anwesenheit, energie, fahrzeug, kalender, klima, pv, raumklima, sonne, speicher, strompreis, szene, tag, tuer, usv, wetter), weisen Speichern im Reiter *MQTT* und das Zurückspielen einer Sicherung jetzt mit Namen ab: Dort liefern die Plugins einander Zustände ohne eigenes Präfix. `haus` allein und andere Präfixe unter `haus/` (etwa `haus/fenster`) bleiben erlaubt; Groß und Klein zählen wie bei MQTT. Ist ein solches Präfix schon gespeichert, ändert sich am Betrieb nichts – das Plugin sendet weiter darunter, nennt es einmal im Protokoll, und der Reiter *Test* zeigt die Zeile „Liegt das Themen-Präfix außerhalb der gemeinsamen Bereiche unter haus/?“ rot. Liste und Texte kommen aus dem gemeinsamen Modul `haus_bereiche.php` (das Präfix gilt hier je Pumpe; der Reiter *Test* nennt die erste Pumpe im gemeinsamen Bereich).
+- **Gespeicherte Einstellungen, die beim Laden nicht gelten (Entscheidung des Hausherrn 23./24.11.2026, Regeln/05 „Lade-Beanstandungen“):** Passt die Kennung einer Pumpe nicht (Großbuchstaben, Sonderzeichen, leer oder doppelt), verwendet das Plugin wie bisher eine passende, sagt es aber jetzt. Ein gelber Kasten über den Reitern nennt jetzt jedes Feld mit gespeichertem und verwendetem Wert, die Selbstprüfung im Reiter *Test* zeigt die Zeile „Gelten die gespeicherten Einstellungen beim Laden so, wie sie gespeichert sind?“ rot, und das Protokoll nennt die Namen einmal je Änderung. Bis 1.0.28 geschah das still. Speichern behält bei einem genannten Feld, das Sie nicht ändern, den gespeicherten Wert, und die angezeigten Werte übernimmt nur der Knopf „Angezeigte Werte übernehmen“ mit gesetztem Haken. Token und Zugangsdaten erscheinen in keiner Meldung mit ihrem Wert, das Protokoll nennt keinen Wert. Gemeinsames Sicherungsmodul 1.3.0.
+- **Statusmeldungen an SignalBot über das gemeinsame Modul (Entscheidung des Hausherrn 24.11.2026):** Dieselben Alarmarten wie die Ansage können zusätzlich als Nachricht an das Plugin SignalBot gehen, je Art abwählbar, ab Werk aus (Reiter Einstellungen, Block „Meldungen an SignalBot“, mit Knopf „Testmeldung senden“). Thema `haus/meldung/pumpenwacht`, nie retained; dieselbe Meldung höchstens einmal in 60 Minuten, insgesamt höchstens 10 je Stunde. Nötig ist SignalBot ab 0.9.44 mit „Meldungen unter haus/meldung annehmen“. Der bisherige Weg über die Adresse von SignalBot (Alarm mit Einzelnummer) bleibt unverändert daneben bestehen.
 
 ## Neu in 1.0.28
 

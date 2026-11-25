@@ -392,7 +392,8 @@ if ($pw_ist_post && isset($_POST['pw_zurueck'])) {
         /* Mit der Datei: 'alt' (die Pumpenschluessel der flachen Form bis 0.9.14) gilt nur fuer eine Datei ohne
          * Pumpenliste; in einer Sicherung seit 1.0.0 wird ein solcher Schluessel oben verworfen und genannt. */
         $pw_sb = pw_sicherung_beschreibung($pw_sroh);
-        $pw_sb['speichern'] = function ($neu) { return pw_config_speichern($neu); };
+        // 1.0.29: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $pw_sb['speichern'] = function ($neu) { return pw_config_speichern($neu, false); };
         $pw_sb['zweitschrift'] = function () { $p = pw_paths(); return array($p['config'], $p['sicherung']); };
         /* Den Dienst nachziehen UND sagen, was mit ihm geschah (Regeln/05). Wie bis 1.0.24: Praefixe, die es nicht
          * mehr gibt, werden im Broker abgeraeumt (B9). Neu: die Befehlsbruecke wird geschaltet wie beim Speichern im
@@ -475,7 +476,7 @@ if ($pw_ist_post && isset($_POST['pumpe_weg'])) {
 }
 
 /* ---------- Einstellungen speichern ---------- */
-if ($pw_ist_post && isset($_POST['speichern'])) {
+if ($pw_ist_post && isset($_POST['speichern']) && !isset($_POST['meld_test'])) {     // 1.0.29: der Knopf Testmeldung (im selben Formular) speichert nicht
     /* Die volle Form MERKEN und flach weiterarbeiten - der Handler
      * unten liest und schreibt Schluessel ohne Pumpenliste, so wie
      * immer. pw_pumpe_zurueck() legt sie am Ende wieder auseinander. */
@@ -577,6 +578,8 @@ if ($pw_ist_post && isset($_POST['speichern'])) {
     /* 1.0.16: Wann gesprochen wird (Stamm). */
     $pw_rana = array();
     list($pw_neu['ansage_regeln']) = ansage_regeln_formular($_POST, pw_ansage_regeln($pw_voll), array(), $pw_tmangel, $pw_tbean, pw_ansage_k());
+    // 1.0.29: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $pw_neu['meldung'] = meld_formular_lesen($_POST, isset($pw_voll['meldung']) ? $pw_voll['meldung'] : null, pw_meld_anlaesse(), $pw_tmangel, $pw_tbean, pw_meld_k(), pw_meld_haken_vorgabe());
     // 1.0.20: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.0.19 ueberschrieb es der naechste Abgleich.
     $pw_neu['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($pw_voll['ansage_token_herkunft']) ? $pw_voll['ansage_token_herkunft'] : array());
     foreach ($pw_tmangel as $pw_tm) { $pw_beanstandet[] = (string) $pw_tm['text']; }
@@ -643,6 +646,15 @@ if ($pw_ist_post && isset($_POST['mqtt_save'])) {
          * Beanstandung, und mqtt_ein war umgestellt (Pruefbericht
          * oberflaeche O7; Regeln/05: speichern nur mit leerer Liste). */
         $pw_fehler[] = sprintf(pw_t('EINST.FEHLER_MUSTER'), pw_t('MQTT.L_TOPIC'));
+        $pw_eingaben = pw_eingaben_sammeln('mqtt', array('mqtt_topic'), $pw_pid);     // X-2
+    } elseif (hb_bereich(pw_mqtt_thema_saeubern($pw_thema_wert)) !== ''
+              && pw_mqtt_thema_saeubern($pw_thema_wert) !== $pw_alt_praefix) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 1.0.29 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $pw_fehler[] = sprintf(pw_t('HAUSBEREICH.FEHLER'), pw_e(pw_mqtt_thema_saeubern($pw_thema_wert)),
+            pw_e(hb_bereich(pw_mqtt_thema_saeubern($pw_thema_wert))));
         $pw_eingaben = pw_eingaben_sammeln('mqtt', array('mqtt_topic'), $pw_pid);     // X-2
     } else {
         $pw_neu['mqtt_topic'] = pw_mqtt_thema_saeubern($pw_thema_wert);
@@ -752,6 +764,12 @@ if ($pw_ist_post && isset($_POST['testwert'])) {
 }
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 1.0.29: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($pw_ist_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = pw_meld_test();
+    if ($meld_ok) { $pw_meldungen[] = $meld_satz; } else { $pw_fehler[] = $meld_satz; }
+    $pw_tab = 'tab-test';
+}
 if ($pw_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     /* Nr. 36 b: die Testansage. Ins Protokoll nur die Kurzform ohne Text und Token. */
     $pw_tk = pw_ansage_k();
@@ -818,6 +836,29 @@ if ($pw_ist_post && isset($_POST['log_leeren'])) {
  * oberflaeche O1, Bauart D). Die Downloads (Vorlage, Sicherung) sind
  * oben schon mit exit fertig. Auch die Abweisung durch den Wachposten
  * geht diesen Weg. */
+/* 1.0.29: Lade-Beanstandungen - angezeigte Werte uebernehmen, nur mit Haken (Entscheidung des Hausherrn 24.11.2026,
+ * "Haken im gelben Kasten"); ohne ihn bleibt die Datei byte-gleich. Geschrieben ohne "Dateiwert behalten". */
+if ($pw_ist_post && sicherung_lade_eingang($_POST) !== '') {
+    $pw_lb = pw_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $pw_fehler[] = sicherung_t('K_LADE_HAKEN_FEHLT', $pw_lb);
+    } else {
+        $pw_laded = pw_lade_roh();
+        $pw_lv = pw_config(false);
+        $pw_un = array();
+        if ($pw_laded !== null) {
+            list($pw_lneu, $pw_un) = sicherung_lade_uebernehmen_stand($pw_laded, $pw_lv, sicherung_lade_beanstandungen($pw_lb, $pw_laded, $pw_lv));
+            if ($pw_un && !pw_config_speichern($pw_lneu, false)) {
+                $pw_fehler[] = sicherung_t('K_SCHREIBFEHLER', $pw_lb);
+                $pw_un = array();
+            }
+        }
+        if ($pw_un) {
+            pw_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $pw_un)));
+            $pw_meldungen[] = sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $pw_lb), implode(', ', $pw_un));
+        }
+    }
+}
 if ($pw_ist_post) {
     if (!pw_meldung_ablegen(array('meldungen' => $pw_meldungen, 'fehler' => $pw_fehler,
                                   'testausgabe' => $pw_testausgabe,
@@ -1032,7 +1073,12 @@ details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8
 <?php foreach ($pw_meldungen as $pw_z) { ?><div class="sm-hinweis"><?= pw_e($pw_z) ?></div><?php } ?>
 <?php if ($pw_fehler) { ?><div class="sm-warnung"><b><?= pw_t('ALLG.FEHLER') ?></b><ul style="margin:6px 0 0 18px;padding:0;"><?php
     foreach ($pw_fehler as $pw_z) { echo '<li>' . pw_e($pw_z) . '</li>'; } ?></ul></div><?php } ?>
+<?php /* 1.0.29: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$pw_lade = pw_lade_beanstandungen();
+pw_lade_melden($pw_lade); ?>
 
+<?= sicherung_lade_kasten(pw_lade_b(true), isset($pw_lade) ? $pw_lade : pw_lade_beanstandungen(),
+        '<input data-role="none" type="hidden" name="fmt" value="' . pw_e($pw_fmt) . '"><input data-role="none" type="hidden" name="activetab" value="' . pw_e($pw_tab) . '">') ?>
 <div class="sm-kacheln">
   <div class="sm-kachel"><?= pw_t('KOPF.PUMPE') ?><b class="<?= $pw_felder['laeuft'] === 1 ? 'sm-an' : ($pw_felder['laeuft'] === 0 ? '' : 'sm-aus') ?>"><?=
       $pw_felder['laeuft'] === 1 ? pw_t('KOPF.LAEUFT') : ($pw_felder['laeuft'] === 0 ? pw_t('KOPF.STEHT') : pw_t('KOPF.UNBEKANNT')) ?></b></div>
@@ -1301,6 +1347,7 @@ foreach ($pw_sperrfelder as $pw_sf): ?>
     'm' => function ($n) { return pw_fk('settings', $n); },
     'c' => function ($n, $g) { return pw_fh('settings', $n, $g); },
     'token_vor_ort' => true), pw_ansage_k()) ?>
+<?= pw_meld_form_html(pw_config()) ?>
 
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= pw_e(pw_t('ALLG.SPEICHERN')) ?></button>
